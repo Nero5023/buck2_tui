@@ -111,22 +111,16 @@ impl BuckProject {
             .arg("targets")
             .arg(":")
             .current_dir(dir_path)
-            .output();
+            .output()?;
 
-        match output {
-            Ok(output) => {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    self.parse_buck2_targets_output(&stdout, dir_path)
-                } else {
-                    // Fallback to manual parsing if buck2 command fails
-                    self.parse_buck_file_fallback(dir_path).await
-                }
-            }
-            Err(_) => {
-                // Buck2 not available, fallback to manual parsing
-                self.parse_buck_file_fallback(dir_path).await
-            }
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            self.parse_buck2_targets_output(&stdout, dir_path)
+        } else {
+            Err(anyhow!(
+                "Failed to get targets from directory: {}",
+                dir_path.display()
+            ))
         }
     }
 
@@ -211,63 +205,6 @@ impl BuckProject {
             },
             Err(_) => Err(anyhow!("Failed to parse target query output")),
         }
-    }
-
-    async fn parse_buck_file_fallback(&self, dir_path: &Path) -> Result<Vec<BuckTarget>> {
-        let buck_file = dir_path.join("BUCK");
-        let buck2_file = dir_path.join("BUCK2");
-
-        let file_to_read = if buck2_file.exists() {
-            buck2_file
-        } else if buck_file.exists() {
-            buck_file
-        } else {
-            return Ok(Vec::new());
-        };
-
-        let content = fs::read_to_string(&file_to_read).await?;
-        self.parse_buck_file_content(&content, dir_path)
-    }
-
-    fn parse_buck_file_content(&self, content: &str, dir_path: &Path) -> Result<Vec<BuckTarget>> {
-        let mut targets = Vec::new();
-
-        for line in content.lines() {
-            let line = line.trim();
-            if line.starts_with("//") || line.is_empty() {
-                continue;
-            }
-
-            if let Some(name_start) = line.find("name = \"") {
-                let name_start = name_start + 8;
-                if let Some(name_end) = line[name_start..].find('"') {
-                    let name = &line[name_start..name_start + name_end];
-
-                    let rule_type = if line.contains("rust_binary") {
-                        "rust_binary"
-                    } else if line.contains("rust_library") {
-                        "rust_library"
-                    } else if line.contains("rust_test") {
-                        "rust_test"
-                    } else if line.contains("java_binary") {
-                        "java_binary"
-                    } else if line.contains("java_library") {
-                        "java_library"
-                    } else {
-                        "unknown"
-                    };
-
-                    targets.push(BuckTarget {
-                        name: name.to_string(),
-                        rule_type: rule_type.to_string(),
-                        path: dir_path.to_path_buf(),
-                        deps: Vec::new(),
-                    });
-                }
-            }
-        }
-
-        Ok(targets)
     }
 
     pub fn update_filtered_targets(&mut self) {
