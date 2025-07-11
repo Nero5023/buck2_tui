@@ -1,11 +1,13 @@
 use anyhow::Result;
 use clap::Parser;
-use tracing_subscriber;
+use tracing_appender;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod app;
 mod buck;
-mod ui;
 mod events;
+mod ui;
+use tracing::{debug, info};
 
 use app::App;
 
@@ -19,7 +21,23 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    // Create logs directory if it doesn't exist
+    std::fs::create_dir_all("logs")?;
+
+    // Set up file logging
+    let file_appender = tracing_appender::rolling::daily("logs", "buck-tui.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer().with_writer(non_blocking).with_ansi(false), // Disable ANSI colors in log files
+        )
+        .with(
+            fmt::layer().with_writer(std::io::stdout).with_ansi(true), // Enable ANSI colors for console output
+        )
+        .init();
+
+    info!("Starting buck-tui");
 
     let args = Args::parse();
     let project_path = args.path.unwrap_or_else(|| ".".to_string());
