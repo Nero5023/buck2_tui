@@ -115,23 +115,18 @@ impl UI {
             Style::default()
         };
 
-        let selected_dir_name = if let Some(dir) = project.get_selected_directory() {
-            dir.path
-                .strip_prefix(&project.root_path)
-                .unwrap_or(&dir.path)
-                .display()
-                .to_string()
-        } else {
-            "No directory selected".to_string()
-        };
+        let package_name = project
+            .get_selected_buck_package_name()
+            .map(|name| format!("{}: ", name))
+            .unwrap_or("No package selected".to_string());
 
         // TODO: use package path like fbcode//buck2/app:
         let title = if project.search_query.is_empty() {
-            format!("Targets ({})", selected_dir_name)
+            format!("Targets ({})", package_name)
         } else {
             format!(
                 "Targets ({}) - Search: {}",
-                selected_dir_name, project.search_query
+                package_name, project.search_query
             )
         };
 

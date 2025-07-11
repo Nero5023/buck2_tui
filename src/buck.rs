@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use walkdir::WalkDir;
@@ -33,6 +34,7 @@ pub struct BuckProject {
     pub selected_target: usize,
     pub search_query: String,
     pub filtered_targets: Vec<BuckTarget>,
+    pub cells: HashMap<String, PathBuf>,
 }
 
 impl BuckProject {
@@ -54,10 +56,12 @@ impl BuckProject {
             selected_target: 0,
             search_query: String::new(),
             filtered_targets: Vec::new(),
+            cells: HashMap::new(),
         };
 
         project.scan_directories().await?;
         project.load_targets().await?;
+        project.load_cells().await?;
         project.update_filtered_targets();
 
         Ok(project)
@@ -129,6 +133,38 @@ impl BuckProject {
                 String::from_utf8_lossy(&output.stderr)
             ))
         }
+    }
+
+    async fn load_cells(&mut self) -> Result<()> {
+        let output = Command::new("buck2")
+            .arg("audit")
+            .arg("cell")
+            .arg("--json")
+            .current_dir(&self.root_path)
+            .output()?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            match serde_json::from_str::<HashMap<String, String>>(&stdout) {
+                Ok(cells_data) => {
+                    self.cells = cells_data
+                        .into_iter()
+                        .map(|(name, path)| (name, PathBuf::from(path)))
+                        .collect();
+                }
+                Err(e) => {
+                    // If we can't parse the cells, just leave it empty and continue
+                    eprintln!("Warning: Failed to parse buck2 audit cell output: {}", e);
+                }
+            }
+        } else {
+            // If the command fails, just leave cells empty and continue
+            eprintln!(
+                "Warning: Failed to get buck2 cells: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
     }
 
     fn parse_buck2_targets_output(&self, output: &str, dir_path: &Path) -> Result<Vec<BuckTarget>> {
@@ -240,13 +276,61 @@ impl BuckProject {
                 .cloned()
                 .collect();
         }
-        
+
         // Reset selected target when directory changes
         self.selected_target = 0;
     }
 
     pub fn get_selected_directory(&self) -> Option<&BuckDirectory> {
         self.directories.get(self.selected_directory)
+    }
+
+    pub fn current_cell(&self) -> Option<&str> {
+        let selected_dir = self.get_selected_directory()?;
+        let current_path = &selected_dir.path;
+
+        let mut best_match: Option<(&str, usize)> = None;
+
+        for (cell_name, cell_path) in &self.cells {
+            // Find common prefix length by comparing path components
+            let common_len = current_path
+                .components()
+                .zip(cell_path.components())
+                .take_while(|(a, b)| a == b)
+                .count();
+
+            if common_len > 0 {
+                match best_match {
+                    None => best_match = Some((cell_name, common_len)),
+                    Some((_, best_len)) if common_len > best_len => {
+                        best_match = Some((cell_name, common_len));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        best_match.map(|(name, _)| name)
+    }
+
+    pub fn get_selected_buck_package_name(&self) -> Option<String> {
+        let cell = self.current_cell()?;
+        let cell_path = self.cells.get(cell)?;
+        let selected_dir = self.get_selected_directory()?;
+        let current_path = &selected_dir.path;
+
+        // Strip the cell path from the current path
+        let relative_path = current_path.strip_prefix(cell_path).ok()?;
+
+        // Convert to string and format as cell//path
+        if relative_path.as_os_str().is_empty() {
+            // If we're at the cell root, just return the cell name
+            Some(format!("{}//", cell))
+        } else {
+            // Convert path separators to forward slashes for Buck format
+            let path_str = relative_path.to_string_lossy().replace('\\', "/");
+            Some(format!("{}//{}", cell, path_str))
+        }
     }
 
     pub fn get_selected_target(&self) -> Option<&BuckTarget> {
