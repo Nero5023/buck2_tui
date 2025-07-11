@@ -1,6 +1,7 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use tokio::fs;
 use walkdir::WalkDir;
 
@@ -14,9 +15,17 @@ pub struct BuckTarget {
 }
 
 #[derive(Debug, Clone)]
+struct TargetDetails {
+    pub rule_type: String,
+    pub deps: Vec<String>,
+    pub outputs: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct BuckDirectory {
     pub path: PathBuf,
     pub targets: Vec<BuckTarget>,
+    pub has_buck_file: bool,
 }
 
 pub struct BuckProject {
@@ -32,9 +41,12 @@ pub struct BuckProject {
 impl BuckProject {
     pub async fn new(project_path: String) -> Result<Self> {
         let root_path = PathBuf::from(project_path);
-        
+
         if !root_path.exists() {
-            return Err(anyhow!("Project path does not exist: {}", root_path.display()));
+            return Err(anyhow!(
+                "Project path does not exist: {}",
+                root_path.display()
+            ));
         }
 
         let mut project = Self {
@@ -56,7 +68,7 @@ impl BuckProject {
 
     async fn scan_directories(&mut self) -> Result<()> {
         for entry in WalkDir::new(&self.root_path)
-            .min_depth(1)
+            .min_depth(0)
             .max_depth(10)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -64,13 +76,13 @@ impl BuckProject {
             if entry.file_type().is_dir() {
                 let buck_file = entry.path().join("BUCK");
                 let buck2_file = entry.path().join("BUCK2");
-                
-                if buck_file.exists() || buck2_file.exists() {
-                    self.directories.push(BuckDirectory {
-                        path: entry.path().to_path_buf(),
-                        targets: Vec::new(),
-                    });
-                }
+                let has_buck_file = buck_file.exists() || buck2_file.exists();
+
+                self.directories.push(BuckDirectory {
+                    path: entry.path().to_path_buf(),
+                    targets: Vec::new(),
+                    has_buck_file,
+                });
             }
         }
         Ok(())
@@ -78,10 +90,16 @@ impl BuckProject {
 
     async fn load_targets(&mut self) -> Result<()> {
         let mut all_targets = Vec::new();
-        let paths: Vec<PathBuf> = self.directories.iter().map(|d| d.path.clone()).collect();
-        
-        for (i, path) in paths.iter().enumerate() {
-            let targets = self.load_targets_from_directory(path).await?;
+        let dirs_with_buck: Vec<(usize, PathBuf)> = self
+            .directories
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.has_buck_file)
+            .map(|(i, d)| (i, d.path.clone()))
+            .collect();
+
+        for (i, path) in dirs_with_buck {
+            let targets = self.load_targets_from_directory(&path).await?;
             self.directories[i].targets = targets.clone();
             all_targets.extend(targets);
         }
@@ -90,9 +108,125 @@ impl BuckProject {
     }
 
     async fn load_targets_from_directory(&self, dir_path: &Path) -> Result<Vec<BuckTarget>> {
+        // Use buck2 targets command to get actual target information
+        let output = Command::new("buck2")
+            .arg("targets")
+            .arg(":")
+            .current_dir(dir_path)
+            .output();
+
+        match output {
+            Ok(output) => {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    self.parse_buck2_targets_output(&stdout, dir_path)
+                } else {
+                    // Fallback to manual parsing if buck2 command fails
+                    self.parse_buck_file_fallback(dir_path).await
+                }
+            }
+            Err(_) => {
+                // Buck2 not available, fallback to manual parsing
+                self.parse_buck_file_fallback(dir_path).await
+            }
+        }
+    }
+
+    fn parse_buck2_targets_output(&self, output: &str, dir_path: &Path) -> Result<Vec<BuckTarget>> {
+        let mut targets = Vec::new();
+
+        for line in output.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            // Buck2 targets output format: //path/to/target:target_name
+            if let Some(colon_pos) = line.rfind(':') {
+                let target_name = &line[colon_pos + 1..];
+
+                // Try to get more details about the target
+                if let Ok(details) = self.get_target_details(line) {
+                    targets.push(BuckTarget {
+                        name: target_name.to_string(),
+                        rule_type: details.rule_type,
+                        path: dir_path.to_path_buf(),
+                        deps: details.deps,
+                        outputs: details.outputs,
+                    });
+                } else {
+                    // Fallback with basic info
+                    targets.push(BuckTarget {
+                        name: target_name.to_string(),
+                        rule_type: "unknown (error)".to_string(),
+                        path: dir_path.to_path_buf(),
+                        deps: Vec::new(),
+                        outputs: Vec::new(),
+                    });
+                }
+            }
+        }
+
+        Ok(targets)
+    }
+
+    fn get_target_details(&self, target_label: &str) -> Result<TargetDetails> {
+        // Try to get detailed information about the target
+        let output = Command::new("buck2")
+            .arg("query")
+            .arg("-A")
+            .arg(target_label)
+            .output();
+
+        match output {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                self.parse_target_query_output(&stdout, target_label)
+            }
+            _ => Err(anyhow!("Failed to get target details")),
+        }
+    }
+
+    fn parse_target_query_output(&self, output: &str, target_label: &str) -> Result<TargetDetails> {
+        // Parse JSON output from buck2 query
+        match serde_json::from_str::<serde_json::Value>(output) {
+            Ok(json) => {
+                match json.get(target_label) {
+                    Some(json) => {
+                        let rule_type = json
+                            .get("buck.type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+
+                        let deps = json
+                            .get("buck.deps")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                                    .collect()
+                            })
+                            .unwrap_or_else(Vec::new);
+
+                        Ok(TargetDetails {
+                            rule_type,
+                            deps,
+                            outputs: Vec::new(), // Would need additional query for outputs
+                        })
+                    }
+                    None => Err(anyhow!("Target not found: {}", target_label)),
+                }
+            }
+            Err(_) => Err(anyhow!("Failed to parse target query output")),
+        }
+    }
+
+    async fn parse_buck_file_fallback(&self, dir_path: &Path) -> Result<Vec<BuckTarget>> {
         let buck_file = dir_path.join("BUCK");
         let buck2_file = dir_path.join("BUCK2");
-        
+
         let file_to_read = if buck2_file.exists() {
             buck2_file
         } else if buck_file.exists() {
@@ -102,24 +236,23 @@ impl BuckProject {
         };
 
         let content = fs::read_to_string(&file_to_read).await?;
-        let targets = self.parse_buck_file(&content, dir_path)?;
-        Ok(targets)
+        self.parse_buck_file_content(&content, dir_path)
     }
 
-    fn parse_buck_file(&self, content: &str, dir_path: &Path) -> Result<Vec<BuckTarget>> {
+    fn parse_buck_file_content(&self, content: &str, dir_path: &Path) -> Result<Vec<BuckTarget>> {
         let mut targets = Vec::new();
-        
+
         for line in content.lines() {
             let line = line.trim();
             if line.starts_with("//") || line.is_empty() {
                 continue;
             }
-            
+
             if let Some(name_start) = line.find("name = \"") {
                 let name_start = name_start + 8;
                 if let Some(name_end) = line[name_start..].find('"') {
                     let name = &line[name_start..name_start + name_end];
-                    
+
                     let rule_type = if line.contains("rust_binary") {
                         "rust_binary"
                     } else if line.contains("rust_library") {
@@ -144,7 +277,7 @@ impl BuckProject {
                 }
             }
         }
-        
+
         Ok(targets)
     }
 
@@ -156,8 +289,14 @@ impl BuckProject {
                 .all_targets
                 .iter()
                 .filter(|target| {
-                    target.name.to_lowercase().contains(&self.search_query.to_lowercase())
-                        || target.rule_type.to_lowercase().contains(&self.search_query.to_lowercase())
+                    target
+                        .name
+                        .to_lowercase()
+                        .contains(&self.search_query.to_lowercase())
+                        || target
+                            .rule_type
+                            .to_lowercase()
+                            .contains(&self.search_query.to_lowercase())
                 })
                 .cloned()
                 .collect();

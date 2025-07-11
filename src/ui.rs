@@ -66,7 +66,8 @@ impl UI {
                     .to_string();
 
                 let target_count = dir.targets.len();
-                let text = format!("{} ({})", display_path, target_count);
+                let buck_indicator = if dir.has_buck_file { "📦" } else { "📁" };
+                let text = format!("{} {} ({})", buck_indicator, display_path, target_count);
                 
                 ListItem::new(text).style(style)
             })

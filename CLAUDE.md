@@ -64,7 +64,22 @@ The project uses these key libraries:
 
 ## Buck2 Integration
 
-The application scans for `BUCK` and `BUCK2` files in the project directory and parses them to extract target information. Currently supports basic target parsing with plans for enhanced Buck2 query integration.
+The application provides comprehensive Buck2 integration:
+
+### Directory Scanning
+- Scans all directories in the project (not just those with Buck files)
+- Identifies directories containing `BUCK` or `BUCK2` files with 📦 icon
+- Regular directories shown with 📁 icon for full navigation capability
+
+### Target Discovery
+- **Primary**: Uses `buck2 targets :` command to get accurate target information
+- **Enhanced**: Uses `buck2 query -A` for detailed target metadata
+- **Fallback**: Manual BUCK file parsing when buck2 commands are unavailable
+
+### Target Information
+- Target names and rule types from buck2 commands
+- Dependency information when available
+- Graceful degradation when buck2 is not installed or accessible
 
 ## File Structure
 
