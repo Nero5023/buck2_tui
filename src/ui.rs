@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
-    Frame,
 };
 
 use crate::buck::{BuckProject, BuckTarget};
@@ -59,7 +59,8 @@ impl UI {
                     Style::default()
                 };
 
-                let display_path = dir.path
+                let display_path = dir
+                    .path
                     .strip_prefix(&project.root_path)
                     .unwrap_or(&dir.path)
                     .display()
@@ -68,7 +69,7 @@ impl UI {
                 let target_count = dir.targets.len();
                 let buck_indicator = if dir.has_buck_file { "📦" } else { "📁" };
                 let text = format!("{} {} ({})", buck_indicator, display_path, target_count);
-                
+
                 ListItem::new(text).style(style)
             })
             .collect();
@@ -175,11 +176,6 @@ impl UI {
             Line::from(vec![
                 Span::styled("Dependencies: ", Style::default().fg(Color::Cyan)),
                 Span::raw(format!("{}", target.deps.len())),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Outputs: ", Style::default().fg(Color::Cyan)),
-                Span::raw(format!("{}", target.outputs.len())),
             ]),
         ]
     }

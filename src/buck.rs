@@ -11,14 +11,12 @@ pub struct BuckTarget {
     pub rule_type: String,
     pub path: PathBuf,
     pub deps: Vec<String>,
-    pub outputs: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 struct TargetDetails {
     pub rule_type: String,
     pub deps: Vec<String>,
-    pub outputs: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,7 +150,6 @@ impl BuckProject {
                         rule_type: details.rule_type,
                         path: dir_path.to_path_buf(),
                         deps: details.deps,
-                        outputs: details.outputs,
                     });
                 } else {
                     // Fallback with basic info
@@ -161,7 +158,6 @@ impl BuckProject {
                         rule_type: "unknown (error)".to_string(),
                         path: dir_path.to_path_buf(),
                         deps: Vec::new(),
-                        outputs: Vec::new(),
                     });
                 }
             }
@@ -190,35 +186,29 @@ impl BuckProject {
     fn parse_target_query_output(&self, output: &str, target_label: &str) -> Result<TargetDetails> {
         // Parse JSON output from buck2 query
         match serde_json::from_str::<serde_json::Value>(output) {
-            Ok(json) => {
-                match json.get(target_label) {
-                    Some(json) => {
-                        let rule_type = json
-                            .get("buck.type")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
+            Ok(json) => match json.get(target_label) {
+                Some(json) => {
+                    let rule_type = json
+                        .get("buck.type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
 
-                        let deps = json
-                            .get("buck.deps")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|v| v.as_str())
-                                    .map(|s| s.to_string())
-                                    .collect()
-                            })
-                            .unwrap_or_else(Vec::new);
-
-                        Ok(TargetDetails {
-                            rule_type,
-                            deps,
-                            outputs: Vec::new(), // Would need additional query for outputs
+                    let deps = json
+                        .get("buck.deps")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .collect()
                         })
-                    }
-                    None => Err(anyhow!("Target not found: {}", target_label)),
+                        .unwrap_or_else(Vec::new);
+
+                    Ok(TargetDetails { rule_type, deps })
                 }
-            }
+                None => Err(anyhow!("Target not found: {}", target_label)),
+            },
             Err(_) => Err(anyhow!("Failed to parse target query output")),
         }
     }
@@ -272,7 +262,6 @@ impl BuckProject {
                         rule_type: rule_type.to_string(),
                         path: dir_path.to_path_buf(),
                         deps: Vec::new(),
-                        outputs: Vec::new(),
                     });
                 }
             }
