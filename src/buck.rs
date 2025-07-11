@@ -116,9 +116,17 @@ impl BuckProject {
             let stdout = String::from_utf8_lossy(&output.stdout);
             self.parse_buck2_targets_output(&stdout, dir_path)
         } else {
+            // If no BUCK or TARGET file exists, return empty target list
+            let buck_file = dir_path.join("BUCK");
+            let target_file = dir_path.join("TARGET");
+
+            if !buck_file.exists() && !target_file.exists() {
+                return Ok(Vec::new());
+            }
             Err(anyhow!(
-                "Failed to get targets from directory: {}",
-                dir_path.display()
+                "Failed to get targets from directory: {}\nError: {}",
+                dir_path.display(),
+                String::from_utf8_lossy(&output.stderr)
             ))
         }
     }
