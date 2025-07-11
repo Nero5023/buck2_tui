@@ -115,10 +115,24 @@ impl UI {
             Style::default()
         };
 
-        let title = if project.search_query.is_empty() {
-            "Targets".to_string()
+        let selected_dir_name = if let Some(dir) = project.get_selected_directory() {
+            dir.path
+                .strip_prefix(&project.root_path)
+                .unwrap_or(&dir.path)
+                .display()
+                .to_string()
         } else {
-            format!("Targets (filtered: {})", project.search_query)
+            "No directory selected".to_string()
+        };
+
+        // TODO: use package path like fbcode//buck2/app:
+        let title = if project.search_query.is_empty() {
+            format!("Targets ({})", selected_dir_name)
+        } else {
+            format!(
+                "Targets ({}) - Search: {}",
+                selected_dir_name, project.search_query
+            )
         };
 
         let targets_list = List::new(targets)

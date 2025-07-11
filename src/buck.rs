@@ -215,11 +215,17 @@ impl BuckProject {
     }
 
     pub fn update_filtered_targets(&mut self) {
-        if self.search_query.is_empty() {
-            self.filtered_targets = self.all_targets.clone();
+        // Get targets from the currently selected directory
+        let selected_dir_targets = if let Some(selected_dir) = self.get_selected_directory() {
+            selected_dir.targets.clone()
         } else {
-            self.filtered_targets = self
-                .all_targets
+            Vec::new()
+        };
+
+        if self.search_query.is_empty() {
+            self.filtered_targets = selected_dir_targets;
+        } else {
+            self.filtered_targets = selected_dir_targets
                 .iter()
                 .filter(|target| {
                     target
@@ -234,6 +240,9 @@ impl BuckProject {
                 .cloned()
                 .collect();
         }
+        
+        // Reset selected target when directory changes
+        self.selected_target = 0;
     }
 
     pub fn get_selected_directory(&self) -> Option<&BuckDirectory> {
@@ -247,6 +256,7 @@ impl BuckProject {
     pub fn next_directory(&mut self) {
         if !self.directories.is_empty() {
             self.selected_directory = (self.selected_directory + 1) % self.directories.len();
+            self.update_filtered_targets();
         }
     }
 
@@ -257,6 +267,7 @@ impl BuckProject {
             } else {
                 self.directories.len() - 1
             };
+            self.update_filtered_targets();
         }
     }
 
@@ -279,6 +290,5 @@ impl BuckProject {
     pub fn set_search_query(&mut self, query: String) {
         self.search_query = query;
         self.update_filtered_targets();
-        self.selected_target = 0;
     }
 }
