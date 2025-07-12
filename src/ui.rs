@@ -65,6 +65,11 @@ impl UI {
                     .unwrap_or(&dir.path)
                     .display()
                     .to_string();
+                let display_path = if display_path.is_empty() {
+                    "."
+                } else {
+                    &display_path
+                };
 
                 let target_count = dir.targets.len();
                 let buck_indicator = if dir.has_buck_file { "📦" } else { "📁" };
