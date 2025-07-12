@@ -32,9 +32,6 @@ async fn main() -> Result<()> {
         .with(
             fmt::layer().with_writer(non_blocking).with_ansi(false), // Disable ANSI colors in log files
         )
-        .with(
-            fmt::layer().with_writer(std::io::stdout).with_ansi(true), // Enable ANSI colors for console output
-        )
         .init();
 
     info!("Starting buck-tui");

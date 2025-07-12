@@ -26,6 +26,12 @@ pub struct BuckDirectory {
     pub has_buck_file: bool,
 }
 
+impl BuckDirectory {
+    fn abs_path(&self) -> PathBuf {
+        self.path.canonicalize().unwrap_or(self.path.clone())
+    }
+}
+
 pub struct BuckProject {
     pub root_path: PathBuf,
     pub directories: Vec<BuckDirectory>,
@@ -287,23 +293,22 @@ impl BuckProject {
 
     pub fn current_cell(&self) -> Option<&str> {
         let selected_dir = self.get_selected_directory()?;
-        let current_path = &selected_dir.path;
+
+        // Get the absolute path of the selected directory
+        let current_path = selected_dir.abs_path();
 
         let mut best_match: Option<(&str, usize)> = None;
 
         for (cell_name, cell_path) in &self.cells {
-            // Find common prefix length by comparing path components
-            let common_len = current_path
-                .components()
-                .zip(cell_path.components())
-                .take_while(|(a, b)| a == b)
-                .count();
+            // Check if cell_path is a prefix of current_path
+            if current_path.starts_with(cell_path) {
+                // Get the number of components in the cell_path
+                let cell_components_count = cell_path.components().count();
 
-            if common_len > 0 {
                 match best_match {
-                    None => best_match = Some((cell_name, common_len)),
-                    Some((_, best_len)) if common_len > best_len => {
-                        best_match = Some((cell_name, common_len));
+                    None => best_match = Some((cell_name, cell_components_count)),
+                    Some((_, best_len)) if cell_components_count > best_len => {
+                        best_match = Some((cell_name, cell_components_count));
                     }
                     _ => {}
                 }
@@ -317,7 +322,7 @@ impl BuckProject {
         let cell = self.current_cell()?;
         let cell_path = self.cells.get(cell)?;
         let selected_dir = self.get_selected_directory()?;
-        let current_path = &selected_dir.path;
+        let current_path = selected_dir.abs_path();
 
         // Strip the cell path from the current path
         let relative_path = current_path.strip_prefix(cell_path).ok()?;
