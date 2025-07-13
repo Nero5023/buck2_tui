@@ -286,7 +286,7 @@ impl BuckProject {
                     self.active_load_request = None;
                 }
 
-                let should_update_filtered = dir_index == self.selected_directory;
+                let current_selected_dir = dir_index == self.selected_directory;
 
                 match result {
                     Ok(targets) => {
@@ -301,8 +301,12 @@ impl BuckProject {
                 }
 
                 // Update filtered targets if this is the selected directory
-                if should_update_filtered {
+                if current_selected_dir {
                     self.update_filtered_targets();
+                    // Trigger detail loading for the first target (which is now selected)
+                    if !self.filtered_targets.is_empty() {
+                        self.request_target_details_for_selected();
+                    }
                 }
             }
         }
