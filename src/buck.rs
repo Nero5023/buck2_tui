@@ -7,6 +7,12 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
+#[derive(Debug)]
+struct ActiveLoadRequest {
+    dir_index: usize,
+    token: CancellationToken,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuckTarget {
     pub name: String,
@@ -47,7 +53,7 @@ pub struct BuckProject {
     pub cells: HashMap<String, PathBuf>,
     pub target_loader_tx: Option<mpsc::UnboundedSender<(usize, PathBuf, CancellationToken)>>,
     pub target_result_rx: Option<mpsc::UnboundedReceiver<(usize, Result<Vec<BuckTarget>>)>>,
-    current_load_token: Option<CancellationToken>,
+    active_load_request: Option<ActiveLoadRequest>,
 }
 
 impl BuckProject {
@@ -78,7 +84,7 @@ impl BuckProject {
             cells: HashMap::new(),
             target_loader_tx: Some(loader_tx),
             target_result_rx: Some(result_rx),
-            current_load_token: None,
+            active_load_request: None,
         };
 
         project.scan_directories().await?;
@@ -142,27 +148,39 @@ impl BuckProject {
             return;
         }
 
-        let dir = &mut self.directories[dir_index];
-        if dir.targets_loaded || dir.targets_loading || !dir.has_buck_file {
-            return;
+        // Check early if we should skip this request
+        {
+            let dir = &self.directories[dir_index];
+            if dir.targets_loaded || dir.targets_loading || !dir.has_buck_file {
+                return;
+            }
         }
 
-        // Cancel previous request if any
-        if let Some(token) = &self.current_load_token {
-            // TODO: trigger BuckDirectory.targets_loading to false
-            token.cancel();
+        // Cancel previous request if any and reset its loading state
+        if let Some(active_request) = &self.active_load_request {
+            active_request.token.cancel();
+            // Reset loading state for the previously loading directory
+            if active_request.dir_index < self.directories.len() {
+                self.directories[active_request.dir_index].targets_loading = false;
+            }
         }
 
-        // Create new cancellation token
+        // Get directory path before creating the new request
+        let dir_path = self.directories[dir_index].path.clone();
+
+        // Create new load request
         let token = CancellationToken::new();
-        self.current_load_token = Some(token.clone());
+        self.active_load_request = Some(ActiveLoadRequest {
+            dir_index,
+            token: token.clone(),
+        });
 
         // Mark as loading
-        dir.targets_loading = true;
+        self.directories[dir_index].targets_loading = true;
 
         // Send request to background task
         if let Some(tx) = &self.target_loader_tx {
-            let _ = tx.send((dir_index, dir.path.clone(), token));
+            let _ = tx.send((dir_index, dir_path, token));
         }
     }
 
@@ -179,6 +197,13 @@ impl BuckProject {
             if dir_index < self.directories.len() {
                 let dir = &mut self.directories[dir_index];
                 dir.targets_loading = false;
+                
+                // Clear active load request if this is the one that was loading
+                if let Some(active_request) = &self.active_load_request {
+                    if active_request.dir_index == dir_index {
+                        self.active_load_request = None;
+                    }
+                }
 
                 let should_update_filtered = dir_index == self.selected_directory;
 
