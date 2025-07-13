@@ -13,16 +13,24 @@ struct ActiveLoadRequest {
     token: CancellationToken,
 }
 
+#[derive(Debug)]
+struct ActiveDetailRequest {
+    dir_index: usize,
+    target_index: usize,
+    token: CancellationToken,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuckTarget {
     pub name: String,
     pub rule_type: String,
     pub path: PathBuf,
     pub deps: Vec<String>,
+    pub details_loaded: bool,
 }
 
 #[derive(Debug, Clone)]
-struct TargetDetails {
+pub struct TargetDetails {
     pub rule_type: String,
     pub deps: Vec<String>,
 }
@@ -53,7 +61,12 @@ pub struct BuckProject {
     pub cells: HashMap<String, PathBuf>,
     pub target_loader_tx: Option<mpsc::UnboundedSender<(usize, PathBuf, CancellationToken)>>,
     pub target_result_rx: Option<mpsc::UnboundedReceiver<(usize, Result<Vec<BuckTarget>>)>>,
+    pub target_detail_loader_tx:
+        Option<mpsc::UnboundedSender<(usize, usize, String, CancellationToken)>>,
+    pub target_detail_result_rx:
+        Option<mpsc::UnboundedReceiver<(usize, usize, Result<TargetDetails>)>>,
     active_load_request: Option<ActiveLoadRequest>,
+    active_detail_request: Option<ActiveDetailRequest>,
 }
 
 impl BuckProject {
@@ -69,9 +82,16 @@ impl BuckProject {
 
         let (loader_tx, loader_rx) = mpsc::unbounded_channel();
         let (result_tx, result_rx) = mpsc::unbounded_channel();
+        let (detail_loader_tx, detail_loader_rx) = mpsc::unbounded_channel();
+        let (detail_result_tx, detail_result_rx) = mpsc::unbounded_channel();
 
         // Spawn background task for loading targets
         tokio::spawn(Self::target_loader_task(loader_rx, result_tx));
+        // Spawn background task for loading target details
+        tokio::spawn(Self::target_detail_loader_task(
+            detail_loader_rx,
+            detail_result_tx,
+        ));
 
         let mut project = Self {
             root_path,
@@ -84,7 +104,10 @@ impl BuckProject {
             cells: HashMap::new(),
             target_loader_tx: Some(loader_tx),
             target_result_rx: Some(result_rx),
+            target_detail_loader_tx: Some(detail_loader_tx),
+            target_detail_result_rx: Some(detail_result_rx),
             active_load_request: None,
+            active_detail_request: None,
         };
 
         project.scan_directories().await?;
@@ -143,6 +166,28 @@ impl BuckProject {
         }
     }
 
+    async fn target_detail_loader_task(
+        mut detail_loader_rx: mpsc::UnboundedReceiver<(usize, usize, String, CancellationToken)>,
+        detail_result_tx: mpsc::UnboundedSender<(usize, usize, Result<TargetDetails>)>,
+    ) {
+        while let Some((dir_index, target_index, target_label, cancel_token)) =
+            detail_loader_rx.recv().await
+        {
+            let result = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    continue; // Skip if cancelled
+                }
+                result = Self::get_target_details_static_async(&target_label) => {
+                    result
+                }
+            };
+
+            if !cancel_token.is_cancelled() {
+                let _ = detail_result_tx.send((dir_index, target_index, result));
+            }
+        }
+    }
+
     pub fn request_targets_for_directory(&mut self, dir_index: usize) {
         if dir_index >= self.directories.len() {
             return;
@@ -184,25 +229,61 @@ impl BuckProject {
         }
     }
 
-    pub fn update_loaded_target_results(&mut self) {
-        let mut results_to_process = Vec::new();
+    pub fn request_target_details(&mut self, dir_index: usize, target_index: usize) {
+        if dir_index >= self.directories.len() {
+            return;
+        }
 
+        let dir = &self.directories[dir_index];
+        if target_index >= dir.targets.len() {
+            return;
+        }
+
+        let target = &dir.targets[target_index];
+        if target.details_loaded {
+            return; // Already loaded
+        }
+
+        // Cancel previous detail request if any
+        if let Some(active_request) = &self.active_detail_request {
+            active_request.token.cancel();
+        }
+
+        let target_label = target.name.clone();
+
+        // Create new detail request
+        let token = CancellationToken::new();
+        self.active_detail_request = Some(ActiveDetailRequest {
+            dir_index,
+            target_index,
+            token: token.clone(),
+        });
+
+        // Send request to background task
+        if let Some(tx) = &self.target_detail_loader_tx {
+            let _ = tx.send((dir_index, target_index, target_label, token));
+        }
+    }
+
+    pub fn update_loaded_target_results(&mut self) {
+        // Process target list results
+        let mut target_results_to_process = Vec::new();
         if let Some(rx) = &mut self.target_result_rx {
             while let Ok((dir_index, result)) = rx.try_recv() {
-                results_to_process.push((dir_index, result));
+                target_results_to_process.push((dir_index, result));
             }
         }
 
-        for (dir_index, result) in results_to_process {
+        for (dir_index, result) in target_results_to_process {
             if dir_index < self.directories.len() {
                 let dir = &mut self.directories[dir_index];
                 dir.targets_loading = false;
-                
+
                 // Clear active load request if this is the one that was loading
-                if let Some(active_request) = &self.active_load_request {
-                    if active_request.dir_index == dir_index {
-                        self.active_load_request = None;
-                    }
+                if let Some(active_request) = &self.active_load_request
+                    && active_request.dir_index == dir_index
+                {
+                    self.active_load_request = None;
                 }
 
                 let should_update_filtered = dir_index == self.selected_directory;
@@ -225,15 +306,59 @@ impl BuckProject {
                 }
             }
         }
+
+        // Process target detail results
+        let mut detail_results_to_process = Vec::new();
+        if let Some(rx) = &mut self.target_detail_result_rx {
+            while let Ok((dir_index, target_index, result)) = rx.try_recv() {
+                detail_results_to_process.push((dir_index, target_index, result));
+            }
+        }
+
+        for (dir_index, target_index, result) in detail_results_to_process {
+            if dir_index < self.directories.len() {
+                let dir = &mut self.directories[dir_index];
+                if target_index < dir.targets.len() {
+                    let target = &mut dir.targets[target_index];
+
+                    // Clear active detail request if this is the one that was loading
+                    if let Some(active_request) = &self.active_detail_request
+                        && active_request.dir_index == dir_index
+                        && active_request.target_index == target_index
+                    {
+                        self.active_detail_request = None;
+                    }
+
+                    match result {
+                        Ok(details) => {
+                            target.rule_type = details.rule_type;
+                            target.deps = details.deps;
+                            target.details_loaded = true;
+                        }
+                        Err(_) => {
+                            // Mark as loaded even on error to avoid retrying
+                            target.rule_type = "error".to_string();
+                            target.details_loaded = true;
+                        }
+                    }
+
+                    // Update filtered targets if this affects the currently displayed targets
+                    if dir_index == self.selected_directory {
+                        self.update_filtered_targets_with_reset(false);
+                    }
+                }
+            }
+        }
     }
 
     async fn load_targets_from_directory_static(dir_path: &Path) -> Result<Vec<BuckTarget>> {
         // Use buck2 targets command to get actual target information
-        let output = Command::new("buck2")
+        let output = tokio::process::Command::new("buck2")
             .arg("targets")
             .arg(":")
             .current_dir(dir_path)
-            .output()?;
+            .output()
+            .await?;
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -295,40 +420,27 @@ impl BuckProject {
                 continue;
             }
 
-            // Buck2 targets output format: //path/to/target:target_name
-            if let Some(colon_pos) = line.rfind(':') {
-                let target_name = &line[colon_pos + 1..];
-
-                // Try to get more details about the target
-                if let Ok(details) = Self::get_target_details_static(line) {
-                    targets.push(BuckTarget {
-                        name: target_name.to_string(),
-                        rule_type: details.rule_type,
-                        path: dir_path.to_path_buf(),
-                        deps: details.deps,
-                    });
-                } else {
-                    // Fallback with basic info
-                    targets.push(BuckTarget {
-                        name: target_name.to_string(),
-                        rule_type: "unknown (error)".to_string(),
-                        path: dir_path.to_path_buf(),
-                        deps: Vec::new(),
-                    });
-                }
-            }
+            // Only store basic info initially, defer detailed query until target is selected
+            targets.push(BuckTarget {
+                name: line.to_string(),
+                rule_type: "unknown".to_string(), // Will be loaded on demand
+                path: dir_path.to_path_buf(),
+                deps: Vec::new(), // Will be loaded on demand
+                details_loaded: false,
+            });
         }
 
         Ok(targets)
     }
 
-    fn get_target_details_static(target_label: &str) -> Result<TargetDetails> {
+    async fn get_target_details_static_async(target_label: &str) -> Result<TargetDetails> {
         // Try to get detailed information about the target
-        let output = Command::new("buck2")
+        let output = tokio::process::Command::new("buck2")
             .arg("query")
             .arg("-A")
             .arg(target_label)
-            .output();
+            .output()
+            .await;
 
         match output {
             Ok(output) if output.status.success() => {
@@ -370,6 +482,10 @@ impl BuckProject {
     }
 
     pub fn update_filtered_targets(&mut self) {
+        self.update_filtered_targets_with_reset(true);
+    }
+
+    fn update_filtered_targets_with_reset(&mut self, reset_selection: bool) {
         // Get targets from the currently selected directory
         let selected_dir_targets = if let Some(selected_dir) = self.get_selected_directory() {
             selected_dir.targets.clone()
@@ -396,8 +512,17 @@ impl BuckProject {
                 .collect();
         }
 
-        // Reset selected target when directory changes
-        self.selected_target = 0;
+        // Only reset selected target when explicitly requested (directory/search changes)
+        if reset_selection {
+            self.selected_target = 0;
+        } else {
+            // Clamp selected target to valid range if list shortened
+            if self.selected_target >= self.filtered_targets.len()
+                && !self.filtered_targets.is_empty()
+            {
+                self.selected_target = self.filtered_targets.len() - 1;
+            }
+        }
     }
 
     pub fn get_selected_directory(&self) -> Option<&BuckDirectory> {
@@ -478,6 +603,8 @@ impl BuckProject {
     pub fn next_target(&mut self) {
         if !self.filtered_targets.is_empty() {
             self.selected_target = (self.selected_target + 1) % self.filtered_targets.len();
+            // Request target details for the newly selected target
+            self.request_target_details_for_selected();
         }
     }
 
@@ -488,11 +615,27 @@ impl BuckProject {
             } else {
                 self.filtered_targets.len() - 1
             };
+            // Request target details for the newly selected target
+            self.request_target_details_for_selected();
         }
     }
 
     pub fn set_search_query(&mut self, query: String) {
         self.search_query = query;
         self.update_filtered_targets();
+    }
+
+    fn request_target_details_for_selected(&mut self) {
+        if let Some(selected_target) = self.get_selected_target() {
+            // Find the actual index of the selected target in the directory's target list
+            if let Some(selected_dir) = self.get_selected_directory()
+                && let Some(actual_target_index) = selected_dir
+                    .targets
+                    .iter()
+                    .position(|t| t.name == selected_target.name && t.path == selected_target.path)
+            {
+                self.request_target_details(self.selected_directory, actual_target_index);
+            }
+        }
     }
 }
