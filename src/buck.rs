@@ -53,7 +53,6 @@ impl BuckDirectory {
 pub struct BuckProject {
     pub root_path: PathBuf,
     pub directories: Vec<BuckDirectory>,
-    pub all_targets: Vec<BuckTarget>,
     pub selected_directory: usize,
     pub selected_target: usize,
     pub search_query: String,
@@ -96,7 +95,6 @@ impl BuckProject {
         let mut project = Self {
             root_path,
             directories: Vec::new(),
-            all_targets: Vec::new(),
             selected_directory: 0,
             selected_target: 0,
             search_query: String::new(),
