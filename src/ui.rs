@@ -71,7 +71,11 @@ impl UI {
                     &display_path
                 };
 
-                let target_count = dir.targets.len();
+                let target_count = if dir.targets_loading {
+                    "loading...".to_string()
+                } else {
+                    dir.targets.len().to_string()
+                };
                 let buck_indicator = if dir.has_buck_file { "📦" } else { "📁" };
                 let text = format!("{} {} ({})", buck_indicator, display_path, target_count);
 
@@ -98,21 +102,29 @@ impl UI {
     }
 
     fn draw_targets(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
-        let targets: Vec<ListItem> = project
-            .filtered_targets
-            .iter()
-            .enumerate()
-            .map(|(i, target)| {
-                let style = if i == project.selected_target {
-                    Style::default().bg(Color::Blue).fg(Color::White)
-                } else {
-                    Style::default()
-                };
+        let targets: Vec<ListItem> = if let Some(selected_dir) = project.get_selected_directory() {
+            if selected_dir.targets_loading {
+                vec![ListItem::new("Loading targets...").style(Style::default().fg(Color::Yellow))]
+            } else {
+                project
+                    .filtered_targets
+                    .iter()
+                    .enumerate()
+                    .map(|(i, target)| {
+                        let style = if i == project.selected_target {
+                            Style::default().bg(Color::Blue).fg(Color::White)
+                        } else {
+                            Style::default()
+                        };
 
-                let text = format!("{} ({})", target.name, target.rule_type);
-                ListItem::new(text).style(style)
-            })
-            .collect();
+                        let text = format!("{} ({})", target.name, target.rule_type);
+                        ListItem::new(text).style(style)
+                    })
+                    .collect()
+            }
+        } else {
+            vec![]
+        };
 
         let block_style = if self.current_pane == Pane::Targets {
             Style::default().fg(Color::Yellow)

@@ -7,7 +7,7 @@ mod app;
 mod buck;
 mod events;
 mod ui;
-use tracing::{debug, info};
+use tracing::info;
 
 use app::App;
 

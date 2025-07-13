@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +26,8 @@ pub struct BuckDirectory {
     pub path: PathBuf,
     pub targets: Vec<BuckTarget>,
     pub has_buck_file: bool,
+    pub targets_loaded: bool,
+    pub targets_loading: bool,
 }
 
 impl BuckDirectory {
@@ -41,6 +45,9 @@ pub struct BuckProject {
     pub search_query: String,
     pub filtered_targets: Vec<BuckTarget>,
     pub cells: HashMap<String, PathBuf>,
+    pub target_loader_tx: Option<mpsc::UnboundedSender<(usize, PathBuf, CancellationToken)>>,
+    pub target_result_rx: Option<mpsc::UnboundedReceiver<(usize, Result<Vec<BuckTarget>>)>>,
+    current_load_token: Option<CancellationToken>,
 }
 
 impl BuckProject {
@@ -54,6 +61,12 @@ impl BuckProject {
             ));
         }
 
+        let (loader_tx, loader_rx) = mpsc::unbounded_channel();
+        let (result_tx, result_rx) = mpsc::unbounded_channel();
+
+        // Spawn background task for loading targets
+        tokio::spawn(Self::target_loader_task(loader_rx, result_tx));
+
         let mut project = Self {
             root_path,
             directories: Vec::new(),
@@ -63,12 +76,19 @@ impl BuckProject {
             search_query: String::new(),
             filtered_targets: Vec::new(),
             cells: HashMap::new(),
+            target_loader_tx: Some(loader_tx),
+            target_result_rx: Some(result_rx),
+            current_load_token: None,
         };
 
         project.scan_directories().await?;
-        project.load_targets().await?;
         project.load_cells().await?;
         project.update_filtered_targets();
+
+        // Request targets for the initial directory
+        if !project.directories.is_empty() {
+            project.request_targets_for_directory(0);
+        }
 
         Ok(project)
     }
@@ -89,32 +109,100 @@ impl BuckProject {
                     path: entry.path().to_path_buf(),
                     targets: Vec::new(),
                     has_buck_file,
+                    targets_loaded: false,
+                    targets_loading: false,
                 });
             }
         }
         Ok(())
     }
 
-    async fn load_targets(&mut self) -> Result<()> {
-        let mut all_targets = Vec::new();
-        let dirs_with_buck: Vec<(usize, PathBuf)> = self
-            .directories
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| d.has_buck_file)
-            .map(|(i, d)| (i, d.path.clone()))
-            .collect();
+    async fn target_loader_task(
+        mut loader_rx: mpsc::UnboundedReceiver<(usize, PathBuf, CancellationToken)>,
+        result_tx: mpsc::UnboundedSender<(usize, Result<Vec<BuckTarget>>)>,
+    ) {
+        while let Some((dir_index, path, cancel_token)) = loader_rx.recv().await {
+            let result = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    continue; // Skip if cancelled
+                }
+                result = Self::load_targets_from_directory_static(&path) => {
+                    result
+                }
+            };
 
-        for (i, path) in dirs_with_buck {
-            let targets = self.load_targets_from_directory(&path).await?;
-            self.directories[i].targets = targets.clone();
-            all_targets.extend(targets);
+            if !cancel_token.is_cancelled() {
+                let _ = result_tx.send((dir_index, result));
+            }
         }
-        self.all_targets = all_targets;
-        Ok(())
     }
 
-    async fn load_targets_from_directory(&self, dir_path: &Path) -> Result<Vec<BuckTarget>> {
+    pub fn request_targets_for_directory(&mut self, dir_index: usize) {
+        if dir_index >= self.directories.len() {
+            return;
+        }
+
+        let dir = &mut self.directories[dir_index];
+        if dir.targets_loaded || dir.targets_loading || !dir.has_buck_file {
+            return;
+        }
+
+        // Cancel previous request if any
+        if let Some(token) = &self.current_load_token {
+            // TODO: trigger BuckDirectory.targets_loading to false
+            token.cancel();
+        }
+
+        // Create new cancellation token
+        let token = CancellationToken::new();
+        self.current_load_token = Some(token.clone());
+
+        // Mark as loading
+        dir.targets_loading = true;
+
+        // Send request to background task
+        if let Some(tx) = &self.target_loader_tx {
+            let _ = tx.send((dir_index, dir.path.clone(), token));
+        }
+    }
+
+    pub fn update_loaded_target_results(&mut self) {
+        let mut results_to_process = Vec::new();
+
+        if let Some(rx) = &mut self.target_result_rx {
+            while let Ok((dir_index, result)) = rx.try_recv() {
+                results_to_process.push((dir_index, result));
+            }
+        }
+
+        for (dir_index, result) in results_to_process {
+            if dir_index < self.directories.len() {
+                let dir = &mut self.directories[dir_index];
+                dir.targets_loading = false;
+
+                let should_update_filtered = dir_index == self.selected_directory;
+
+                match result {
+                    Ok(targets) => {
+                        dir.targets = targets;
+                        dir.targets_loaded = true;
+                    }
+                    Err(_) => {
+                        // Keep empty targets on error
+                        dir.targets = Vec::new();
+                        dir.targets_loaded = true;
+                    }
+                }
+
+                // Update filtered targets if this is the selected directory
+                if should_update_filtered {
+                    self.update_filtered_targets();
+                }
+            }
+        }
+    }
+
+    async fn load_targets_from_directory_static(dir_path: &Path) -> Result<Vec<BuckTarget>> {
         // Use buck2 targets command to get actual target information
         let output = Command::new("buck2")
             .arg("targets")
@@ -124,7 +212,7 @@ impl BuckProject {
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            self.parse_buck2_targets_output(&stdout, dir_path)
+            Self::parse_buck2_targets_output_static(&stdout, dir_path)
         } else {
             // If no BUCK or TARGET file exists, return empty target list
             let buck_file = dir_path.join("BUCK");
@@ -173,7 +261,7 @@ impl BuckProject {
         Ok(())
     }
 
-    fn parse_buck2_targets_output(&self, output: &str, dir_path: &Path) -> Result<Vec<BuckTarget>> {
+    fn parse_buck2_targets_output_static(output: &str, dir_path: &Path) -> Result<Vec<BuckTarget>> {
         let mut targets = Vec::new();
 
         for line in output.lines() {
@@ -187,7 +275,7 @@ impl BuckProject {
                 let target_name = &line[colon_pos + 1..];
 
                 // Try to get more details about the target
-                if let Ok(details) = self.get_target_details(line) {
+                if let Ok(details) = Self::get_target_details_static(line) {
                     targets.push(BuckTarget {
                         name: target_name.to_string(),
                         rule_type: details.rule_type,
@@ -209,7 +297,7 @@ impl BuckProject {
         Ok(targets)
     }
 
-    fn get_target_details(&self, target_label: &str) -> Result<TargetDetails> {
+    fn get_target_details_static(target_label: &str) -> Result<TargetDetails> {
         // Try to get detailed information about the target
         let output = Command::new("buck2")
             .arg("query")
@@ -220,13 +308,13 @@ impl BuckProject {
         match output {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                self.parse_target_query_output(&stdout, target_label)
+                Self::parse_target_query_output_static(&stdout, target_label)
             }
             _ => Err(anyhow!("Failed to get target details")),
         }
     }
 
-    fn parse_target_query_output(&self, output: &str, target_label: &str) -> Result<TargetDetails> {
+    fn parse_target_query_output_static(output: &str, target_label: &str) -> Result<TargetDetails> {
         // Parse JSON output from buck2 query
         match serde_json::from_str::<serde_json::Value>(output) {
             Ok(json) => match json.get(target_label) {
@@ -346,6 +434,7 @@ impl BuckProject {
         if !self.directories.is_empty() {
             self.selected_directory = (self.selected_directory + 1) % self.directories.len();
             self.update_filtered_targets();
+            self.request_targets_for_directory(self.selected_directory);
         }
     }
 
@@ -357,6 +446,7 @@ impl BuckProject {
                 self.directories.len() - 1
             };
             self.update_filtered_targets();
+            self.request_targets_for_directory(self.selected_directory);
         }
     }
 
