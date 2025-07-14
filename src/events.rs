@@ -82,7 +82,12 @@ impl EventHandler {
                     PaneGroup::Explorer => {
                         // In explorer mode, 'h' goes to parent directory, but keeps focus on current dir pane
                         if let Some(parent) = project.current_path.parent() {
+                            let previous_current = project.current_path.clone();
                             project.navigate_to_directory(parent.to_path_buf());
+                            // Select the directory we came from (previous current directory)
+                            project.selected_directory = previous_current;
+                            // Update targets for the newly selected directory
+                            project.update_targets_for_selected_directory();
                         }
                         // Always keep focus on current directory pane (never focus on parent pane)
                         ui.current_pane = Pane::CurrentDirectory;
@@ -182,4 +187,3 @@ impl EventHandler {
         Ok(())
     }
 }
-
