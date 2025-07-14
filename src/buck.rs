@@ -116,14 +116,6 @@ impl UICurrentDirectory {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.sub_directories.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.sub_directories.is_empty()
-    }
-
     pub fn select_next_directory(&self, dir: &PathBuf) -> Option<&PathBuf> {
         if let Some(index) = self.dir_to_index.get(dir) {
             let next_index = (index + 1) % self.sub_directories.len();
@@ -494,7 +486,7 @@ impl BuckProject {
                 }
                 Err(e) => {
                     // If we can't parse the cells, just leave it empty and continue
-                    eprintln!("Warning: Failed to parse buck2 audit cell output: {}", e);
+                    eprintln!("Warning: Failed to parse buck2 audit cell output: {e}");
                 }
             }
         } else {
@@ -664,11 +656,11 @@ impl BuckProject {
         // Convert to string and format as cell//path
         if relative_path.as_os_str().is_empty() {
             // If we're at the cell root, just return the cell name
-            Some(format!("{}//", cell))
+            Some(format!("{cell}//"))
         } else {
             // Convert path separators to forward slashes for Buck format
             let path_str = relative_path.to_string_lossy().replace('\\', "/");
-            Some(format!("{}//{}", cell, path_str))
+            Some(format!("{cell}//{path_str}"))
         }
     }
 
@@ -716,28 +708,28 @@ impl BuckProject {
     }
 
     pub fn get_parent_directories(&self) -> Vec<BuckDirectory> {
-        if let Some(parent) = self.current_path.parent() {
-            if let Ok(entries) = std::fs::read_dir(parent) {
-                let mut dirs = Vec::new();
-                for entry in entries.filter_map(|e| e.ok()) {
-                    if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                        let path = entry.path();
-                        let buck_file = path.join("BUCK");
-                        let targets_file = path.join("TARGETS");
-                        let has_buck_file = buck_file.exists() || targets_file.exists();
+        if let Some(parent) = self.current_path.parent()
+            && let Ok(entries) = std::fs::read_dir(parent)
+        {
+            let mut dirs = Vec::new();
+            for entry in entries.filter_map(|e| e.ok()) {
+                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    let path = entry.path();
+                    let buck_file = path.join("BUCK");
+                    let targets_file = path.join("TARGETS");
+                    let has_buck_file = buck_file.exists() || targets_file.exists();
 
-                        dirs.push(BuckDirectory {
-                            path,
-                            targets: Vec::new(),
-                            has_buck_file,
-                            targets_loaded: false,
-                            targets_loading: false,
-                        });
-                    }
+                    dirs.push(BuckDirectory {
+                        path,
+                        targets: Vec::new(),
+                        has_buck_file,
+                        targets_loaded: false,
+                        targets_loading: false,
+                    });
                 }
-                dirs.sort_by(|a, b| a.path.file_name().cmp(&b.path.file_name()));
-                return dirs;
             }
+            dirs.sort_by(|a, b| a.path.file_name().cmp(&b.path.file_name()));
+            return dirs;
         }
         Vec::new()
     }
@@ -776,7 +768,7 @@ impl BuckProject {
 
     fn find_or_add_directory(&mut self, path: &PathBuf) {
         // First, try to find existing directory
-        if let Some(_) = self.directories.get(path) {
+        if self.directories.contains_key(path) {
             return;
         }
 

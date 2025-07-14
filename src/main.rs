@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::Parser;
-use tracing_appender;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod app;

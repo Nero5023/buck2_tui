@@ -63,8 +63,7 @@ impl UI {
 
         let directories: Vec<ListItem> = parent_dirs
             .iter()
-            .enumerate()
-            .map(|(_i, dir)| {
+            .map(|dir| {
                 let is_current = dir.path == project.current_path;
                 let style = if is_current {
                     Style::default().bg(Color::Blue).fg(Color::White)

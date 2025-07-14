@@ -39,3 +39,7 @@ indexmap = "2"
 
 # Buck2 integration
 which = "6.0"
+
+
+[lints.clippy]
+uninlined_format_args = "allow"
