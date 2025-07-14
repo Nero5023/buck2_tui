@@ -68,7 +68,7 @@ The application provides comprehensive Buck2 integration:
 
 ### Directory Scanning
 - Scans all directories in the project (not just those with Buck files)
-- Identifies directories containing `BUCK` or `BUCK2` files with 📦 icon
+- Identifies directories containing `BUCK` or `TARGETS` files with 📦 icon
 - Regular directories shown with 📁 icon for full navigation capability
 
 ### Target Discovery

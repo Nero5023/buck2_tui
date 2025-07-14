@@ -24,7 +24,7 @@ pub enum Pane {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PaneGroup {
-    Explorer, // Parent + Current directory panes
+    Explorer,  // Parent + Current directory panes
     Inspector, // Targets + Details panes
 }
 
@@ -60,7 +60,7 @@ impl UI {
 
     fn draw_parent_directory(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
         let parent_dirs = project.get_parent_directories();
-            
+
         let directories: Vec<ListItem> = parent_dirs
             .iter()
             .enumerate()
@@ -72,7 +72,9 @@ impl UI {
                     Style::default()
                 };
 
-                let display_path = dir.path.file_name()
+                let display_path = dir
+                    .path
+                    .file_name()
                     .unwrap_or_else(|| dir.path.as_os_str())
                     .to_string_lossy();
 
@@ -89,8 +91,11 @@ impl UI {
             Style::default()
         };
 
-        let title = format!("Parent: {}", 
-            project.current_path.parent()
+        let title = format!(
+            "Parent: {}",
+            project
+                .current_path
+                .parent()
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy())
                 .unwrap_or_else(|| "Root".into())
@@ -110,12 +115,12 @@ impl UI {
 
     fn draw_current_directory(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
         let current_dirs = project.get_current_directories();
-            
+
         let directories: Vec<ListItem> = current_dirs
+            .sub_directories
             .iter()
-            .enumerate()
-            .map(|(i, dir)| {
-                let style = if i == project.selected_directory {
+            .map(|dir| {
+                let style = if dir.path == project.selected_directory {
                     Style::default().bg(Color::Blue).fg(Color::White)
                 } else {
                     Style::default()
@@ -124,7 +129,8 @@ impl UI {
                 let display_path = if dir.path == project.current_path {
                     ".".to_string()
                 } else {
-                    dir.path.file_name()
+                    dir.path
+                        .file_name()
                         .unwrap_or_else(|| dir.path.as_os_str())
                         .to_string_lossy()
                         .to_string()
@@ -148,8 +154,11 @@ impl UI {
             Style::default()
         };
 
-        let title = format!("Current: {}", 
-            project.current_path.file_name()
+        let title = format!(
+            "Current: {}",
+            project
+                .current_path
+                .file_name()
                 .map(|n| n.to_string_lossy())
                 .unwrap_or_else(|| ".".into())
         );
@@ -165,7 +174,6 @@ impl UI {
 
         f.render_widget(directories_list, area);
     }
-
 
     fn draw_targets(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
         let targets: Vec<ListItem> = if let Some(selected_dir) = project.get_selected_directory() {

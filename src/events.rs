@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::buck::BuckProject;
 use crate::ui::{Pane, PaneGroup, UI};
+use tracing::debug;
 
 pub struct EventHandler;
 
@@ -99,12 +100,8 @@ impl EventHandler {
                 match ui.current_group {
                     PaneGroup::Explorer => {
                         // In explorer mode, 'l' enters selected directory, keeps focus on current dir pane
-                        let current_dirs = project.get_current_directories();
-                        if project.selected_directory < current_dirs.len() {
-                            let selected_dir = &current_dirs[project.selected_directory];
-                            if selected_dir.path != project.current_path {
-                                project.navigate_to_directory(selected_dir.path.clone());
-                            }
+                        if project.selected_directory != project.current_path {
+                            project.navigate_to_directory(project.selected_directory.clone());
                         }
                         // Always keep focus on current directory pane
                         ui.current_pane = Pane::CurrentDirectory;
@@ -119,6 +116,7 @@ impl EventHandler {
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
+                debug!("trigger next (down)");
                 match ui.current_pane {
                     Pane::ParentDirectory => {
                         // Never focus on parent directory - this shouldn't happen
@@ -126,8 +124,10 @@ impl EventHandler {
                     Pane::CurrentDirectory => {
                         // Navigate through current directories
                         let current_dirs = project.get_current_directories();
-                        if !current_dirs.is_empty() {
-                            project.selected_directory = (project.selected_directory + 1) % current_dirs.len();
+                        if let Some(next_dir) =
+                            current_dirs.select_next_directory(&project.selected_directory)
+                        {
+                            project.selected_directory = next_dir.clone();
                             // Update targets for the newly selected directory
                             project.update_targets_for_selected_directory();
                         }
@@ -144,12 +144,10 @@ impl EventHandler {
                     Pane::CurrentDirectory => {
                         // Navigate through current directories
                         let current_dirs = project.get_current_directories();
-                        if !current_dirs.is_empty() {
-                            project.selected_directory = if project.selected_directory > 0 {
-                                project.selected_directory - 1
-                            } else {
-                                current_dirs.len() - 1
-                            };
+                        if let Some(prev_dir) =
+                            current_dirs.select_prev_directory(&project.selected_directory)
+                        {
+                            project.selected_directory = prev_dir.clone();
                             // Update targets for the newly selected directory
                             project.update_targets_for_selected_directory();
                         }
@@ -165,16 +163,12 @@ impl EventHandler {
                     }
                     Pane::CurrentDirectory => {
                         // Navigate into selected directory or switch to inspector
-                        let current_dirs = project.get_current_directories();
-                        if project.selected_directory < current_dirs.len() {
-                            let selected_dir = &current_dirs[project.selected_directory];
-                            if selected_dir.path != project.current_path {
-                                project.navigate_to_directory(selected_dir.path.clone());
-                            } else {
-                                // If current directory is selected, switch to inspector
-                                ui.current_group = PaneGroup::Inspector;
-                                ui.current_pane = Pane::Targets;
-                            }
+                        if project.selected_directory != project.current_path {
+                            project.navigate_to_directory(project.selected_directory.clone());
+                        } else {
+                            // If current directory is selected, switch to inspector
+                            ui.current_group = PaneGroup::Inspector;
+                            ui.current_pane = Pane::Targets;
                         }
                     }
                     Pane::Targets => {
@@ -188,3 +182,4 @@ impl EventHandler {
         Ok(())
     }
 }
+

@@ -5,16 +5,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::debug;
 
 #[derive(Debug)]
 struct ActiveLoadRequest {
-    dir_index: usize,
+    dir_path: PathBuf,
     token: CancellationToken,
 }
 
 #[derive(Debug)]
 struct ActiveDetailRequest {
-    dir_index: usize,
+    dir_path: PathBuf,
     target_index: usize,
     token: CancellationToken,
 }
@@ -43,6 +44,117 @@ pub struct BuckDirectory {
     pub targets_loading: bool,
 }
 
+pub struct UICurrentDirectory {
+    path: PathBuf,
+    pub sub_directories: Vec<BuckDirectory>,
+    dir_to_index: HashMap<PathBuf, usize>,
+}
+
+impl UICurrentDirectory {
+    pub fn new(current_path: &PathBuf) -> Self {
+        let mut sub_directories = Vec::new();
+        let mut dir_to_index = HashMap::new();
+
+        if let Ok(entries) = std::fs::read_dir(current_path) {
+            // Add current directory as "."
+            let buck_file = current_path.join("BUCK");
+            let targets_file = current_path.join("TARGETS");
+            let has_buck_file = buck_file.exists() || targets_file.exists();
+
+            let current_dir = BuckDirectory {
+                path: current_path.clone(),
+                targets: Vec::new(),
+                has_buck_file,
+                targets_loaded: false,
+                targets_loading: false,
+            };
+
+            sub_directories.push(current_dir);
+
+            // Add subdirectories
+            for entry in entries.filter_map(|e| e.ok()) {
+                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    let path = entry.path();
+                    let buck_file = path.join("BUCK");
+                    let buck2_file: PathBuf = path.join("BUCK2");
+                    let has_buck_file = buck_file.exists() || buck2_file.exists();
+
+                    let dir = BuckDirectory {
+                        path: path.clone(),
+                        targets: Vec::new(),
+                        has_buck_file,
+                        targets_loaded: false,
+                        targets_loading: false,
+                    };
+
+                    sub_directories.push(dir);
+                }
+            }
+
+            // Sort directories with "." always first
+            sub_directories.sort_by(|a, b| {
+                // "." always comes first
+                if a.path == *current_path {
+                    std::cmp::Ordering::Less
+                } else if b.path == *current_path {
+                    std::cmp::Ordering::Greater
+                } else {
+                    a.path.file_name().cmp(&b.path.file_name())
+                }
+            });
+
+            // Rebuild the index map after sorting
+            for (index, dir) in sub_directories.iter().enumerate() {
+                dir_to_index.insert(dir.path.clone(), index);
+            }
+        }
+
+        Self {
+            path: current_path.clone(),
+            sub_directories,
+            dir_to_index,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.sub_directories.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sub_directories.is_empty()
+    }
+
+    pub fn select_next_directory(&self, dir: &PathBuf) -> Option<&PathBuf> {
+        if let Some(index) = self.dir_to_index.get(dir) {
+            let next_index = (index + 1) % self.sub_directories.len();
+            Some(&self.sub_directories[next_index].path)
+        } else {
+            None
+        }
+    }
+
+    pub fn select_prev_directory(&self, dir: &PathBuf) -> Option<&PathBuf> {
+        if let Some(index) = self.dir_to_index.get(dir) {
+            let prev_index = if *index > 0 {
+                index - 1
+            } else {
+                self.sub_directories.len() - 1
+            };
+            Some(&self.sub_directories[prev_index].path)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_directory(&self, dir: &PathBuf) -> Option<&BuckDirectory> {
+        if let Some(index) = self.dir_to_index.get(dir) {
+            Some(&self.sub_directories[*index])
+        } else {
+            None
+        }
+    }
+}
+
 impl BuckDirectory {
     fn abs_path(&self) -> PathBuf {
         self.path.canonicalize().unwrap_or(self.path.clone())
@@ -52,19 +164,21 @@ impl BuckDirectory {
 pub struct BuckProject {
     pub root_path: PathBuf,
     pub current_path: PathBuf,
-    pub directories: Vec<BuckDirectory>,
-    pub selected_directory: usize,
+    // pub directories: Vec<BuckDirectory>,
+    pub directories: HashMap<PathBuf, BuckDirectory>,
+    pub selected_directory: PathBuf,
     pub selected_target: usize,
     pub search_query: String,
     // used in the UI to display for the list of targets in the targets panel
     pub filtered_targets: Vec<BuckTarget>,
+
     pub cells: HashMap<String, PathBuf>,
-    pub target_loader_tx: Option<mpsc::UnboundedSender<(usize, PathBuf, CancellationToken)>>,
-    pub target_result_rx: Option<mpsc::UnboundedReceiver<(usize, Result<Vec<BuckTarget>>)>>,
+    pub target_loader_tx: Option<mpsc::UnboundedSender<(PathBuf, CancellationToken)>>,
+    pub target_result_rx: Option<mpsc::UnboundedReceiver<(PathBuf, Result<Vec<BuckTarget>>)>>,
     pub target_detail_loader_tx:
-        Option<mpsc::UnboundedSender<(usize, usize, String, CancellationToken)>>,
+        Option<mpsc::UnboundedSender<(PathBuf, usize, String, CancellationToken)>>,
     pub target_detail_result_rx:
-        Option<mpsc::UnboundedReceiver<(usize, usize, Result<TargetDetails>)>>,
+        Option<mpsc::UnboundedReceiver<(PathBuf, usize, Result<TargetDetails>)>>,
     active_load_request: Option<ActiveLoadRequest>,
     active_detail_request: Option<ActiveDetailRequest>,
 }
@@ -94,12 +208,13 @@ impl BuckProject {
         ));
 
         let current_path = root_path.clone();
+        let selected_directory = current_path.clone();
 
         let mut project = Self {
             root_path,
             current_path,
-            directories: Vec::new(),
-            selected_directory: 0,
+            directories: HashMap::new(),
+            selected_directory,
             selected_target: 0,
             search_query: String::new(),
             filtered_targets: Vec::new(),
@@ -121,30 +236,31 @@ impl BuckProject {
     }
 
     async fn target_loader_task(
-        mut loader_rx: mpsc::UnboundedReceiver<(usize, PathBuf, CancellationToken)>,
-        result_tx: mpsc::UnboundedSender<(usize, Result<Vec<BuckTarget>>)>,
+        mut loader_rx: mpsc::UnboundedReceiver<(PathBuf, CancellationToken)>,
+        result_tx: mpsc::UnboundedSender<(PathBuf, Result<Vec<BuckTarget>>)>,
     ) {
-        while let Some((dir_index, path, cancel_token)) = loader_rx.recv().await {
+        while let Some((path, cancel_token)) = loader_rx.recv().await {
             let result = tokio::select! {
                 _ = cancel_token.cancelled() => {
                     continue; // Skip if cancelled
                 }
                 result = Self::load_targets_from_directory_static(&path) => {
+                    debug!("get targets for {} , result: {:?}", path.display(), result);
                     result
                 }
             };
 
             if !cancel_token.is_cancelled() {
-                let _ = result_tx.send((dir_index, result));
+                let _ = result_tx.send((path, result));
             }
         }
     }
 
     async fn target_detail_loader_task(
-        mut detail_loader_rx: mpsc::UnboundedReceiver<(usize, usize, String, CancellationToken)>,
-        detail_result_tx: mpsc::UnboundedSender<(usize, usize, Result<TargetDetails>)>,
+        mut detail_loader_rx: mpsc::UnboundedReceiver<(PathBuf, usize, String, CancellationToken)>,
+        detail_result_tx: mpsc::UnboundedSender<(PathBuf, usize, Result<TargetDetails>)>,
     ) {
-        while let Some((dir_index, target_index, target_label, cancel_token)) =
+        while let Some((dir_path, target_index, target_label, cancel_token)) =
             detail_loader_rx.recv().await
         {
             let result = tokio::select! {
@@ -157,22 +273,19 @@ impl BuckProject {
             };
 
             if !cancel_token.is_cancelled() {
-                let _ = detail_result_tx.send((dir_index, target_index, result));
+                let _ = detail_result_tx.send((dir_path, target_index, result));
             }
         }
     }
 
     // request targets for the currently selected directory, if loaded, update the filtered targets
     // which is used to display the list of targets in the targets panel
-    pub fn request_targets_for_directory(&mut self, dir_index: usize) {
-        if dir_index >= self.directories.len() {
-            return;
-        }
-
+    pub fn request_targets_for_directory(&mut self, dir: PathBuf) {
         // Check early if we should skip this request
         {
-            let dir = &self.directories[dir_index];
-            if dir.targets_loaded || dir.targets_loading || !dir.has_buck_file {
+            if let Some(dir) = &self.directories.get(&dir)
+                && (dir.targets_loaded || dir.targets_loading || !dir.has_buck_file)
+            {
                 self.update_filtered_targets_with_reset(true);
                 return;
             }
@@ -182,36 +295,27 @@ impl BuckProject {
         if let Some(active_request) = &self.active_load_request {
             active_request.token.cancel();
             // Reset loading state for the previously loading directory
-            if active_request.dir_index < self.directories.len() {
-                self.directories[active_request.dir_index].targets_loading = false;
-            }
+            self.directories.get_mut(&dir).unwrap().targets_loading = true;
         }
-
-        // Get directory path before creating the new request
-        let dir_path = self.directories[dir_index].path.clone();
 
         // Create new load request
         let token = CancellationToken::new();
         self.active_load_request = Some(ActiveLoadRequest {
-            dir_index,
+            dir_path: dir.clone(),
             token: token.clone(),
         });
 
         // Mark as loading
-        self.directories[dir_index].targets_loading = true;
+        self.directories.get_mut(&dir).unwrap().targets_loading = true;
 
         // Send request to background task
         if let Some(tx) = &self.target_loader_tx {
-            let _ = tx.send((dir_index, dir_path, token));
+            let _ = tx.send((dir, token));
         }
     }
 
-    pub fn request_target_details(&mut self, dir_index: usize, target_index: usize) {
-        if dir_index >= self.directories.len() {
-            return;
-        }
-
-        let dir = &self.directories[dir_index];
+    pub fn request_target_details(&mut self, dir_path: PathBuf, target_index: usize) {
+        let dir = self.directories.get(&dir_path).unwrap();
         if target_index >= dir.targets.len() {
             return;
         }
@@ -231,14 +335,14 @@ impl BuckProject {
         // Create new detail request
         let token = CancellationToken::new();
         self.active_detail_request = Some(ActiveDetailRequest {
-            dir_index,
+            dir_path: dir_path.clone(),
             target_index,
             token: token.clone(),
         });
 
         // Send request to background task
         if let Some(tx) = &self.target_detail_loader_tx {
-            let _ = tx.send((dir_index, target_index, target_label, token));
+            let _ = tx.send((dir_path, target_index, target_label, token));
         }
     }
 
@@ -246,44 +350,57 @@ impl BuckProject {
         // Process target list results
         let mut target_results_to_process = Vec::new();
         if let Some(rx) = &mut self.target_result_rx {
-            while let Ok((dir_index, result)) = rx.try_recv() {
-                target_results_to_process.push((dir_index, result));
+            while let Ok((dir_path, result)) = rx.try_recv() {
+                target_results_to_process.push((dir_path, result));
             }
         }
 
-        for (dir_index, result) in target_results_to_process {
-            if dir_index < self.directories.len() {
-                let dir = &mut self.directories[dir_index];
-                dir.targets_loading = false;
+        for (dir_path, result) in target_results_to_process {
+            debug!(
+                "update loaded target results for dir index: {}, result: {:?}",
+                dir_path.display(),
+                result
+            );
+            debug!("self.directories.len(): {}", self.directories.len());
 
-                // Clear active load request if this is the one that was loading
-                if let Some(active_request) = &self.active_load_request
-                    && active_request.dir_index == dir_index
-                {
-                    self.active_load_request = None;
+            let dir = self.directories.get_mut(&dir_path).unwrap();
+            debug!("dir: {:?}", dir);
+            dir.targets_loading = false;
+
+            // Clear active load request if this is the one that was loading
+            if let Some(active_request) = &self.active_load_request
+                && active_request.dir_path == dir.path
+            {
+                self.active_load_request = None;
+            }
+
+            let current_selected_dir = dir.path == self.selected_directory;
+
+            match result {
+                Ok(targets) => {
+                    dir.targets = targets;
+                    dir.targets_loaded = true;
                 }
-
-                let current_selected_dir = dir_index == self.selected_directory;
-
-                match result {
-                    Ok(targets) => {
-                        dir.targets = targets;
-                        dir.targets_loaded = true;
-                    }
-                    Err(_) => {
-                        // Keep empty targets on error
-                        dir.targets = Vec::new();
-                        dir.targets_loaded = true;
-                    }
+                Err(_) => {
+                    // Keep empty targets on error
+                    dir.targets = Vec::new();
+                    dir.targets_loaded = true;
                 }
+            }
 
-                // Update filtered targets if this is the selected directory
-                if current_selected_dir {
-                    self.update_filtered_targets();
-                    // Trigger detail loading for the first target (which is now selected)
-                    if !self.filtered_targets.is_empty() {
-                        self.request_target_details_for_selected();
-                    }
+            debug!(
+                "is current selected dir: {}, dir_indxe: {}, self.selected_directory: {}",
+                current_selected_dir,
+                dir_path.display(),
+                self.selected_directory.display()
+            );
+
+            // Update filtered targets if this is the selected directory
+            if current_selected_dir {
+                self.update_filtered_targets();
+                // Trigger detail loading for the first target (which is now selected)
+                if !self.filtered_targets.is_empty() {
+                    self.request_target_details_for_selected();
                 }
             }
         }
@@ -296,37 +413,35 @@ impl BuckProject {
             }
         }
 
-        for (dir_index, target_index, result) in detail_results_to_process {
-            if dir_index < self.directories.len() {
-                let dir = &mut self.directories[dir_index];
-                if target_index < dir.targets.len() {
-                    let target = &mut dir.targets[target_index];
+        for (dir_path, target_index, result) in detail_results_to_process {
+            let dir = self.directories.get_mut(&dir_path).unwrap();
+            if target_index < dir.targets.len() {
+                let target = &mut dir.targets[target_index];
 
-                    // Clear active detail request if this is the one that was loading
-                    if let Some(active_request) = &self.active_detail_request
-                        && active_request.dir_index == dir_index
-                        && active_request.target_index == target_index
-                    {
-                        self.active_detail_request = None;
-                    }
+                // Clear active detail request if this is the one that was loading
+                if let Some(active_request) = &self.active_detail_request
+                    && active_request.dir_path == dir_path
+                    && active_request.target_index == target_index
+                {
+                    self.active_detail_request = None;
+                }
 
-                    match result {
-                        Ok(details) => {
-                            target.rule_type = details.rule_type;
-                            target.deps = details.deps;
-                            target.details_loaded = true;
-                        }
-                        Err(_) => {
-                            // Mark as loaded even on error to avoid retrying
-                            target.rule_type = "error".to_string();
-                            target.details_loaded = true;
-                        }
+                match result {
+                    Ok(details) => {
+                        target.rule_type = details.rule_type;
+                        target.deps = details.deps;
+                        target.details_loaded = true;
                     }
+                    Err(_) => {
+                        // Mark as loaded even on error to avoid retrying
+                        target.rule_type = "error".to_string();
+                        target.details_loaded = true;
+                    }
+                }
 
-                    // Update filtered targets if this affects the currently displayed targets
-                    if dir_index == self.selected_directory {
-                        self.update_filtered_targets_with_reset(false);
-                    }
+                // Update filtered targets if this affects the currently displayed targets
+                if dir_path == self.selected_directory {
+                    self.update_filtered_targets_with_reset(false);
                 }
             }
         }
@@ -507,7 +622,7 @@ impl BuckProject {
     }
 
     pub fn get_selected_directory(&self) -> Option<&BuckDirectory> {
-        self.directories.get(self.selected_directory)
+        self.directories.get(&self.selected_directory)
     }
 
     pub fn current_cell(&self) -> Option<&str> {
@@ -595,7 +710,7 @@ impl BuckProject {
                     .iter()
                     .position(|t| t.name == selected_target.name && t.path == selected_target.path)
             {
-                self.request_target_details(self.selected_directory, actual_target_index);
+                self.request_target_details(self.selected_directory.clone(), actual_target_index);
             }
         }
     }
@@ -608,8 +723,8 @@ impl BuckProject {
                     if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
                         let path = entry.path();
                         let buck_file = path.join("BUCK");
-                        let buck2_file = path.join("BUCK2");
-                        let has_buck_file = buck_file.exists() || buck2_file.exists();
+                        let targets_file = path.join("TARGETS");
+                        let has_buck_file = buck_file.exists() || targets_file.exists();
 
                         dirs.push(BuckDirectory {
                             path,
@@ -627,58 +742,13 @@ impl BuckProject {
         Vec::new()
     }
 
-    pub fn get_current_directories(&self) -> Vec<BuckDirectory> {
-        if let Ok(entries) = std::fs::read_dir(&self.current_path) {
-            let mut dirs = Vec::new();
-
-            // Add current directory as "."
-            let buck_file = self.current_path.join("BUCK");
-            let buck2_file = self.current_path.join("BUCK2");
-            let has_buck_file = buck_file.exists() || buck2_file.exists();
-
-            dirs.push(BuckDirectory {
-                path: self.current_path.clone(),
-                targets: Vec::new(),
-                has_buck_file,
-                targets_loaded: false,
-                targets_loading: false,
-            });
-
-            // Add subdirectories
-            for entry in entries.filter_map(|e| e.ok()) {
-                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                    let path = entry.path();
-                    let buck_file = path.join("BUCK");
-                    let buck2_file = path.join("BUCK2");
-                    let has_buck_file = buck_file.exists() || buck2_file.exists();
-
-                    dirs.push(BuckDirectory {
-                        path,
-                        targets: Vec::new(),
-                        has_buck_file,
-                        targets_loaded: false,
-                        targets_loading: false,
-                    });
-                }
-            }
-            dirs.sort_by(|a, b| {
-                // "." always comes first
-                if a.path == self.current_path {
-                    std::cmp::Ordering::Less
-                } else if b.path == self.current_path {
-                    std::cmp::Ordering::Greater
-                } else {
-                    a.path.file_name().cmp(&b.path.file_name())
-                }
-            });
-            return dirs;
-        }
-        Vec::new()
+    pub fn get_current_directories(&self) -> UICurrentDirectory {
+        UICurrentDirectory::new(&self.current_path)
     }
 
     pub fn navigate_to_directory(&mut self, dir_path: PathBuf) {
-        self.current_path = dir_path;
-        self.selected_directory = 0;
+        self.current_path = dir_path.clone();
+        self.selected_directory = dir_path;
         self.selected_target = 0;
         self.filtered_targets.clear();
 
@@ -687,16 +757,15 @@ impl BuckProject {
     }
 
     pub fn update_targets_for_selected_directory(&mut self) {
+        // TODO: it is no need to get the current directories here, we can use BuckDirectory for
+        // self.selected_directory
         let current_dirs = self.get_current_directories();
-        if self.selected_directory < current_dirs.len() {
-            let selected_dir = &current_dirs[self.selected_directory];
 
+        if let Some(selected_dir) = current_dirs.get_directory(&self.selected_directory) {
             if selected_dir.has_buck_file {
                 // Find or add directory to our internal list for async loading
-                let dir_index = self.find_or_add_directory(&selected_dir.path);
-                if let Some(index) = dir_index {
-                    self.request_targets_for_directory(index);
-                }
+                self.find_or_add_directory(&selected_dir.path);
+                self.request_targets_for_directory(self.selected_directory.clone());
             } else {
                 // Clear targets if directory doesn't have Buck files
                 self.filtered_targets.clear();
@@ -705,25 +774,24 @@ impl BuckProject {
         }
     }
 
-    fn find_or_add_directory(&mut self, path: &PathBuf) -> Option<usize> {
+    fn find_or_add_directory(&mut self, path: &PathBuf) {
         // First, try to find existing directory
-        if let Some(index) = self.directories.iter().position(|d| d.path == *path) {
-            return Some(index);
+        if let Some(_) = self.directories.get(path) {
+            return;
         }
 
         // If not found, add it
         let buck_file = path.join("BUCK");
-        let buck2_file = path.join("BUCK2");
-        let has_buck_file = buck_file.exists() || buck2_file.exists();
+        let targets_file = path.join("TARGETS");
+        let has_buck_file = buck_file.exists() || targets_file.exists();
 
-        self.directories.push(BuckDirectory {
+        let new_dir = BuckDirectory {
             path: path.clone(),
             targets: Vec::new(),
             has_buck_file,
             targets_loaded: false,
             targets_loading: false,
-        });
-
-        Some(self.directories.len() - 1)
+        };
+        self.directories.insert(path.clone(), new_dir);
     }
 }

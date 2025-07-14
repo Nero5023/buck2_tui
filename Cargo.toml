@@ -34,5 +34,8 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 tracing-appender = "0.2"
 
+# data structure
+indexmap = "2"
+
 # Buck2 integration
 which = "6.0"
