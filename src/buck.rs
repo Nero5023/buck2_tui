@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use walkdir::WalkDir;
 
 #[derive(Debug)]
 struct ActiveLoadRequest {
@@ -52,10 +51,12 @@ impl BuckDirectory {
 
 pub struct BuckProject {
     pub root_path: PathBuf,
+    pub current_path: PathBuf,
     pub directories: Vec<BuckDirectory>,
     pub selected_directory: usize,
     pub selected_target: usize,
     pub search_query: String,
+    // used in the UI to display for the list of targets in the targets panel
     pub filtered_targets: Vec<BuckTarget>,
     pub cells: HashMap<String, PathBuf>,
     pub target_loader_tx: Option<mpsc::UnboundedSender<(usize, PathBuf, CancellationToken)>>,
@@ -92,8 +93,11 @@ impl BuckProject {
             detail_result_tx,
         ));
 
+        let current_path = root_path.clone();
+
         let mut project = Self {
             root_path,
+            current_path,
             directories: Vec::new(),
             selected_directory: 0,
             selected_target: 0,
@@ -108,40 +112,12 @@ impl BuckProject {
             active_detail_request: None,
         };
 
-        project.scan_directories().await?;
         project.load_cells().await?;
-        project.update_filtered_targets();
 
-        // Request targets for the initial directory
-        if !project.directories.is_empty() {
-            project.request_targets_for_directory(0);
-        }
+        // Request targets for the initial current directory if it has Buck files
+        project.update_targets_for_selected_directory();
 
         Ok(project)
-    }
-
-    async fn scan_directories(&mut self) -> Result<()> {
-        for entry in WalkDir::new(&self.root_path)
-            .min_depth(0)
-            .max_depth(10)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            if entry.file_type().is_dir() {
-                let buck_file = entry.path().join("BUCK");
-                let buck2_file = entry.path().join("BUCK2");
-                let has_buck_file = buck_file.exists() || buck2_file.exists();
-
-                self.directories.push(BuckDirectory {
-                    path: entry.path().to_path_buf(),
-                    targets: Vec::new(),
-                    has_buck_file,
-                    targets_loaded: false,
-                    targets_loading: false,
-                });
-            }
-        }
-        Ok(())
     }
 
     async fn target_loader_task(
@@ -186,6 +162,8 @@ impl BuckProject {
         }
     }
 
+    // request targets for the currently selected directory, if loaded, update the filtered targets
+    // which is used to display the list of targets in the targets panel
     pub fn request_targets_for_directory(&mut self, dir_index: usize) {
         if dir_index >= self.directories.len() {
             return;
@@ -195,6 +173,7 @@ impl BuckProject {
         {
             let dir = &self.directories[dir_index];
             if dir.targets_loaded || dir.targets_loading || !dir.has_buck_file {
+                self.update_filtered_targets_with_reset(true);
                 return;
             }
         }
@@ -582,26 +561,6 @@ impl BuckProject {
         self.filtered_targets.get(self.selected_target)
     }
 
-    pub fn next_directory(&mut self) {
-        if !self.directories.is_empty() {
-            self.selected_directory = (self.selected_directory + 1) % self.directories.len();
-            self.update_filtered_targets();
-            self.request_targets_for_directory(self.selected_directory);
-        }
-    }
-
-    pub fn prev_directory(&mut self) {
-        if !self.directories.is_empty() {
-            self.selected_directory = if self.selected_directory > 0 {
-                self.selected_directory - 1
-            } else {
-                self.directories.len() - 1
-            };
-            self.update_filtered_targets();
-            self.request_targets_for_directory(self.selected_directory);
-        }
-    }
-
     pub fn next_target(&mut self) {
         if !self.filtered_targets.is_empty() {
             self.selected_target = (self.selected_target + 1) % self.filtered_targets.len();
@@ -639,5 +598,132 @@ impl BuckProject {
                 self.request_target_details(self.selected_directory, actual_target_index);
             }
         }
+    }
+
+    pub fn get_parent_directories(&self) -> Vec<BuckDirectory> {
+        if let Some(parent) = self.current_path.parent() {
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                let mut dirs = Vec::new();
+                for entry in entries.filter_map(|e| e.ok()) {
+                    if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                        let path = entry.path();
+                        let buck_file = path.join("BUCK");
+                        let buck2_file = path.join("BUCK2");
+                        let has_buck_file = buck_file.exists() || buck2_file.exists();
+
+                        dirs.push(BuckDirectory {
+                            path,
+                            targets: Vec::new(),
+                            has_buck_file,
+                            targets_loaded: false,
+                            targets_loading: false,
+                        });
+                    }
+                }
+                dirs.sort_by(|a, b| a.path.file_name().cmp(&b.path.file_name()));
+                return dirs;
+            }
+        }
+        Vec::new()
+    }
+
+    pub fn get_current_directories(&self) -> Vec<BuckDirectory> {
+        if let Ok(entries) = std::fs::read_dir(&self.current_path) {
+            let mut dirs = Vec::new();
+
+            // Add current directory as "."
+            let buck_file = self.current_path.join("BUCK");
+            let buck2_file = self.current_path.join("BUCK2");
+            let has_buck_file = buck_file.exists() || buck2_file.exists();
+
+            dirs.push(BuckDirectory {
+                path: self.current_path.clone(),
+                targets: Vec::new(),
+                has_buck_file,
+                targets_loaded: false,
+                targets_loading: false,
+            });
+
+            // Add subdirectories
+            for entry in entries.filter_map(|e| e.ok()) {
+                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    let path = entry.path();
+                    let buck_file = path.join("BUCK");
+                    let buck2_file = path.join("BUCK2");
+                    let has_buck_file = buck_file.exists() || buck2_file.exists();
+
+                    dirs.push(BuckDirectory {
+                        path,
+                        targets: Vec::new(),
+                        has_buck_file,
+                        targets_loaded: false,
+                        targets_loading: false,
+                    });
+                }
+            }
+            dirs.sort_by(|a, b| {
+                // "." always comes first
+                if a.path == self.current_path {
+                    std::cmp::Ordering::Less
+                } else if b.path == self.current_path {
+                    std::cmp::Ordering::Greater
+                } else {
+                    a.path.file_name().cmp(&b.path.file_name())
+                }
+            });
+            return dirs;
+        }
+        Vec::new()
+    }
+
+    pub fn navigate_to_directory(&mut self, dir_path: PathBuf) {
+        self.current_path = dir_path;
+        self.selected_directory = 0;
+        self.selected_target = 0;
+        self.filtered_targets.clear();
+
+        // Request targets for the new current directory
+        self.update_targets_for_selected_directory();
+    }
+
+    pub fn update_targets_for_selected_directory(&mut self) {
+        let current_dirs = self.get_current_directories();
+        if self.selected_directory < current_dirs.len() {
+            let selected_dir = &current_dirs[self.selected_directory];
+
+            if selected_dir.has_buck_file {
+                // Find or add directory to our internal list for async loading
+                let dir_index = self.find_or_add_directory(&selected_dir.path);
+                if let Some(index) = dir_index {
+                    self.request_targets_for_directory(index);
+                }
+            } else {
+                // Clear targets if directory doesn't have Buck files
+                self.filtered_targets.clear();
+                self.selected_target = 0;
+            }
+        }
+    }
+
+    fn find_or_add_directory(&mut self, path: &PathBuf) -> Option<usize> {
+        // First, try to find existing directory
+        if let Some(index) = self.directories.iter().position(|d| d.path == *path) {
+            return Some(index);
+        }
+
+        // If not found, add it
+        let buck_file = path.join("BUCK");
+        let buck2_file = path.join("BUCK2");
+        let has_buck_file = buck_file.exists() || buck2_file.exists();
+
+        self.directories.push(BuckDirectory {
+            path: path.clone(),
+            targets: Vec::new(),
+            has_buck_file,
+            targets_loaded: false,
+            targets_loading: false,
+        });
+
+        Some(self.directories.len() - 1)
     }
 }

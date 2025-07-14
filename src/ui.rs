@@ -11,20 +11,29 @@ use crate::buck::{BuckProject, BuckTarget};
 pub struct UI {
     pub search_mode: bool,
     pub current_pane: Pane,
+    pub current_group: PaneGroup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Pane {
-    Directories,
+    ParentDirectory,
+    CurrentDirectory,
     Targets,
     Details,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PaneGroup {
+    Explorer, // Parent + Current directory panes
+    Inspector, // Targets + Details panes
 }
 
 impl UI {
     pub fn new() -> Self {
         Self {
             search_mode: false,
-            current_pane: Pane::Directories,
+            current_pane: Pane::CurrentDirectory,
+            current_group: PaneGroup::Explorer,
         }
     }
 
@@ -32,24 +41,77 @@ impl UI {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(25),
-                Constraint::Percentage(40),
-                Constraint::Percentage(35),
+                Constraint::Percentage(20), // Parent directory
+                Constraint::Percentage(25), // Current directory
+                Constraint::Percentage(30), // Target list
+                Constraint::Percentage(25), // Target details
             ])
             .split(f.area());
 
-        self.draw_directories(f, chunks[0], project);
-        self.draw_targets(f, chunks[1], project);
-        self.draw_details(f, chunks[2], project);
+        self.draw_parent_directory(f, chunks[0], project);
+        self.draw_current_directory(f, chunks[1], project);
+        self.draw_targets(f, chunks[2], project);
+        self.draw_details(f, chunks[3], project);
 
         if self.search_mode {
             self.draw_search_popup(f, project);
         }
     }
 
-    fn draw_directories(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
-        let directories: Vec<ListItem> = project
-            .directories
+    fn draw_parent_directory(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
+        let parent_dirs = project.get_parent_directories();
+            
+        let directories: Vec<ListItem> = parent_dirs
+            .iter()
+            .enumerate()
+            .map(|(_i, dir)| {
+                let is_current = dir.path == project.current_path;
+                let style = if is_current {
+                    Style::default().bg(Color::Blue).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+
+                let display_path = dir.path.file_name()
+                    .unwrap_or_else(|| dir.path.as_os_str())
+                    .to_string_lossy();
+
+                let buck_indicator = if dir.has_buck_file { "📦" } else { "📁" };
+                let text = format!("{} {}", buck_indicator, display_path);
+
+                ListItem::new(text).style(style)
+            })
+            .collect();
+
+        let block_style = if self.current_pane == Pane::ParentDirectory {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+
+        let title = format!("Parent: {}", 
+            project.current_path.parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_else(|| "Root".into())
+        );
+
+        let directories_list = List::new(directories)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(block_style),
+            )
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+
+        f.render_widget(directories_list, area);
+    }
+
+    fn draw_current_directory(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
+        let current_dirs = project.get_current_directories();
+            
+        let directories: Vec<ListItem> = current_dirs
             .iter()
             .enumerate()
             .map(|(i, dir)| {
@@ -59,16 +121,13 @@ impl UI {
                     Style::default()
                 };
 
-                let display_path = dir
-                    .path
-                    .strip_prefix(&project.root_path)
-                    .unwrap_or(&dir.path)
-                    .display()
-                    .to_string();
-                let display_path = if display_path.is_empty() {
-                    "."
+                let display_path = if dir.path == project.current_path {
+                    ".".to_string()
                 } else {
-                    &display_path
+                    dir.path.file_name()
+                        .unwrap_or_else(|| dir.path.as_os_str())
+                        .to_string_lossy()
+                        .to_string()
                 };
 
                 let target_count = if dir.targets_loading {
@@ -83,23 +142,30 @@ impl UI {
             })
             .collect();
 
-        let block_style = if self.current_pane == Pane::Directories {
+        let block_style = if self.current_pane == Pane::CurrentDirectory {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
         };
 
+        let title = format!("Current: {}", 
+            project.current_path.file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_else(|| ".".into())
+        );
+
         let directories_list = List::new(directories)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Directories")
+                    .title(title)
                     .border_style(block_style),
             )
             .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
         f.render_widget(directories_list, area);
     }
+
 
     fn draw_targets(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
         let targets: Vec<ListItem> = if let Some(selected_dir) = project.get_selected_directory() {

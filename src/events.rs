@@ -2,7 +2,7 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::buck::BuckProject;
-use crate::ui::{Pane, UI};
+use crate::ui::{Pane, PaneGroup, UI};
 
 pub struct EventHandler;
 
@@ -65,44 +65,117 @@ impl EventHandler {
                 ui.search_mode = true;
             }
             KeyCode::Tab => {
-                ui.current_pane = match ui.current_pane {
-                    Pane::Directories => Pane::Targets,
-                    Pane::Targets => Pane::Details,
-                    Pane::Details => Pane::Directories,
+                // Switch between Explorer and Inspector groups
+                ui.current_group = match ui.current_group {
+                    PaneGroup::Explorer => PaneGroup::Inspector,
+                    PaneGroup::Inspector => PaneGroup::Explorer,
+                };
+                // Set appropriate pane for the group
+                ui.current_pane = match ui.current_group {
+                    PaneGroup::Explorer => Pane::CurrentDirectory,
+                    PaneGroup::Inspector => Pane::Targets,
                 };
             }
             KeyCode::Char('h') | KeyCode::Left => {
-                ui.current_pane = match ui.current_pane {
-                    Pane::Targets => Pane::Directories,
-                    Pane::Details => Pane::Targets,
-                    _ => ui.current_pane,
-                };
+                match ui.current_group {
+                    PaneGroup::Explorer => {
+                        // In explorer mode, 'h' goes to parent directory, but keeps focus on current dir pane
+                        if let Some(parent) = project.current_path.parent() {
+                            project.navigate_to_directory(parent.to_path_buf());
+                        }
+                        // Always keep focus on current directory pane (never focus on parent pane)
+                        ui.current_pane = Pane::CurrentDirectory;
+                    }
+                    PaneGroup::Inspector => {
+                        // In inspector mode, 'h' moves left within inspector panes
+                        ui.current_pane = match ui.current_pane {
+                            Pane::Details => Pane::Targets,
+                            _ => ui.current_pane,
+                        };
+                    }
+                }
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                ui.current_pane = match ui.current_pane {
-                    Pane::Directories => Pane::Targets,
-                    Pane::Targets => Pane::Details,
-                    _ => ui.current_pane,
-                };
+                match ui.current_group {
+                    PaneGroup::Explorer => {
+                        // In explorer mode, 'l' enters selected directory, keeps focus on current dir pane
+                        let current_dirs = project.get_current_directories();
+                        if project.selected_directory < current_dirs.len() {
+                            let selected_dir = &current_dirs[project.selected_directory];
+                            if selected_dir.path != project.current_path {
+                                project.navigate_to_directory(selected_dir.path.clone());
+                            }
+                        }
+                        // Always keep focus on current directory pane
+                        ui.current_pane = Pane::CurrentDirectory;
+                    }
+                    PaneGroup::Inspector => {
+                        // In inspector mode, 'l' moves right within inspector panes
+                        ui.current_pane = match ui.current_pane {
+                            Pane::Targets => Pane::Details,
+                            _ => ui.current_pane,
+                        };
+                    }
+                }
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 match ui.current_pane {
-                    Pane::Directories => project.next_directory(),
+                    Pane::ParentDirectory => {
+                        // Never focus on parent directory - this shouldn't happen
+                    }
+                    Pane::CurrentDirectory => {
+                        // Navigate through current directories
+                        let current_dirs = project.get_current_directories();
+                        if !current_dirs.is_empty() {
+                            project.selected_directory = (project.selected_directory + 1) % current_dirs.len();
+                            // Update targets for the newly selected directory
+                            project.update_targets_for_selected_directory();
+                        }
+                    }
                     Pane::Targets => project.next_target(),
                     Pane::Details => {}
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 match ui.current_pane {
-                    Pane::Directories => project.prev_directory(),
+                    Pane::ParentDirectory => {
+                        // Never focus on parent directory - this shouldn't happen
+                    }
+                    Pane::CurrentDirectory => {
+                        // Navigate through current directories
+                        let current_dirs = project.get_current_directories();
+                        if !current_dirs.is_empty() {
+                            project.selected_directory = if project.selected_directory > 0 {
+                                project.selected_directory - 1
+                            } else {
+                                current_dirs.len() - 1
+                            };
+                            // Update targets for the newly selected directory
+                            project.update_targets_for_selected_directory();
+                        }
+                    }
                     Pane::Targets => project.prev_target(),
                     Pane::Details => {}
                 }
             }
             KeyCode::Enter => {
                 match ui.current_pane {
-                    Pane::Directories => {
-                        ui.current_pane = Pane::Targets;
+                    Pane::ParentDirectory => {
+                        // Never focus on parent directory - this shouldn't happen
+                    }
+                    Pane::CurrentDirectory => {
+                        // Navigate into selected directory or switch to inspector
+                        let current_dirs = project.get_current_directories();
+                        if project.selected_directory < current_dirs.len() {
+                            let selected_dir = &current_dirs[project.selected_directory];
+                            if selected_dir.path != project.current_path {
+                                project.navigate_to_directory(selected_dir.path.clone());
+                            } else {
+                                // If current directory is selected, switch to inspector
+                                ui.current_group = PaneGroup::Inspector;
+                                ui.current_pane = Pane::Targets;
+                            }
+                        }
                     }
                     Pane::Targets => {
                         ui.current_pane = Pane::Details;
