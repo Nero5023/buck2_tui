@@ -190,7 +190,7 @@ impl UI {
                             Style::default()
                         };
 
-                        let text = format!("{} ({})", target.name, target.rule_type);
+                        let text = format!("{} ({})", target.target_name(), target.rule_type);
                         ListItem::new(text).style(style)
                     })
                     .collect()

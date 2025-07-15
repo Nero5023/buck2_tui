@@ -29,6 +29,19 @@ pub struct BuckTarget {
     pub details_loaded: bool,
 }
 
+impl BuckTarget {
+    pub fn target_name(&self) -> String {
+        self.name
+            .split("//")
+            .last()
+            .unwrap()
+            .split(":")
+            .last()
+            .unwrap()
+            .to_string()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TargetDetails {
     pub rule_type: String,
