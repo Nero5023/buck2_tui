@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use nerd_font_symbols::dev as dev_symbols;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -41,8 +42,46 @@ impl BuckTarget {
             .to_string()
     }
 
+    fn get_rule_language(&self) -> &str {
+        // Remove prefix underscore and split by underscore to get the first part
+        let rule_type = self.rule_type.strip_prefix('_').unwrap_or(&self.rule_type);
+        rule_type.split('_').next().unwrap_or("unknown")
+    }
+
+    pub fn get_language_icon(&self) -> (&str, &str) {
+        match self.get_rule_language() {
+            "rust" => (dev_symbols::DEV_RUST, "#dea584"), // Rust
+            "python" => (dev_symbols::DEV_PYTHON, "#ffbc03"), // Python
+            "cpp" | "cxx" => (dev_symbols::DEV_CPLUSPLUS, "#519aba"), // C++
+            "c" => (dev_symbols::DEV_C_LANG, "#599eff"),  // C
+            "java" => (dev_symbols::DEV_JAVA, "#cc3e44"), // Java
+            "javascript" | "js" => (dev_symbols::DEV_JAVASCRIPT, "#cbcb41"), // JavaScript
+            "go" => (dev_symbols::DEV_GO, "#00add8"),     // Go
+            "swift" => (dev_symbols::DEV_SWIFT, "#e37933"), // Swift
+            "kotlin" => (dev_symbols::DEV_KOTLIN, "#7f52ff"), // Kotlin
+            "scala" => (dev_symbols::DEV_SCALA, "#cc3e44"), // Scala
+            "haskell" => (dev_symbols::DEV_HASKELL, "#a074c4"), // Haskell
+            "clojure" => (dev_symbols::DEV_CLOJURE, "#8dc149"), // Clojure
+            "erlang" => (dev_symbols::DEV_ERLANG, "#b83998"), // Erlang
+            "elixir" => (dev_symbols::DEV_ELIXIR, "#a074c4"), // Elixir
+            "ruby" => (dev_symbols::DEV_RUBY, "#701516"), // Ruby
+            "php" => (dev_symbols::DEV_PHP, "#a074c4"),   // PHP
+            "dart" => (dev_symbols::DEV_DART, "#03589c"), // Dart
+            "lua" => (dev_symbols::DEV_LUA, "#51a0cf"),   // Lua
+            "shell" | "bash" => (dev_symbols::DEV_BASH, "#89e051"), // Shell
+            "docker" => (dev_symbols::DEV_DOCKER, "#458ee6"), // Docker
+            "vim" => (dev_symbols::DEV_VIM, "#019833"),   // Vim
+            "web" | "html" => (dev_symbols::DEV_HTML5, "#e44d26"), // HTML5
+            "css" => (dev_symbols::DEV_CSS3, "#663399"),  // CSS3
+            "git" => (dev_symbols::DEV_GIT, "#f14c28"),   // Git
+            "angular" => (dev_symbols::DEV_ANGULAR, "#e23f67"), // Angular
+            "vue" => (dev_symbols::DEV_VUEJS, "#8dc149"), // Vue
+            _ => ("", "#888888"),                        // default: gear
+        }
+    }
+
     pub fn display_title(&self) -> String {
-        format!("{} ({})", self.target_name(), self.rule_type)
+        format!(" {} ({})", self.target_name(), self.rule_type)
     }
 }
 

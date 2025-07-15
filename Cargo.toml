@@ -41,5 +41,9 @@ indexmap = "2"
 which = "6.0"
 
 
+# nerd font symbols
+nerd-font-symbols = "0.3.0"
+
+
 [lints.clippy]
 uninlined_format_args = "allow"

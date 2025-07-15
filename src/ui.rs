@@ -190,7 +190,19 @@ impl UI {
                             Style::default()
                         };
 
-                        let text = target.display_title();
+                        let (icon, color) = target.get_language_icon();
+                        let icon = Span::styled(
+                            icon,
+                            Style::default().fg(Color::from_u32(
+                                u32::from_str_radix(&color[1..], 16).unwrap_or(0x888888),
+                            )),
+                        );
+                        let text = Line::from(vec![
+                            Span::raw(" "),
+                            icon,
+                            Span::raw(" "),
+                            Span::raw(target.display_title()),
+                        ]);
                         ListItem::new(text).style(style)
                     })
                     .collect()

@@ -135,6 +135,7 @@ dependencies = [
  "fuzzy-matcher",
  "ignore",
  "indexmap",
+ "nerd-font-symbols",
  "ratatui",
  "serde",
  "serde_json",
@@ -589,6 +590,12 @@ dependencies = [
  "wasi",
  "windows-sys 0.59.0",
 ]
+
+[[package]]
+name = "nerd-font-symbols"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db539dfb6fbeede2eb121c76d6796c8b209ac5c9fdf857aa0f0cb0a6b898d4c1"
 
 [[package]]
 name = "nu-ansi-term"
