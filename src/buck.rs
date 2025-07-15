@@ -40,6 +40,10 @@ impl BuckTarget {
             .unwrap()
             .to_string()
     }
+
+    pub fn display_title(&self) -> String {
+        format!("{} ({})", self.target_name(), self.rule_type)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -597,11 +601,12 @@ impl BuckProject {
         if self.search_query.is_empty() {
             self.filtered_targets = selected_dir_targets;
         } else {
+            // TODO: maybe use fzf to filter targets
             self.filtered_targets = selected_dir_targets
                 .iter()
                 .filter(|target| {
                     target
-                        .name
+                        .display_title()
                         .to_lowercase()
                         .contains(&self.search_query.to_lowercase())
                         || target
