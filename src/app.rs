@@ -11,12 +11,14 @@ use std::time::Duration;
 
 use crate::buck::BuckProject;
 use crate::events::EventHandler;
+use crate::scheduler::Scheduler;
 use crate::ui::UI;
 
 pub struct App {
     project: BuckProject,
     ui: UI,
     event_handler: EventHandler,
+    scheduler: Scheduler,
     should_quit: bool,
 }
 
@@ -25,13 +27,23 @@ impl App {
         let project = BuckProject::new(project_path).await?;
         let ui = UI::new();
         let event_handler = EventHandler::new();
+        let scheduler = Scheduler::new();
 
         Ok(Self {
             project,
             ui,
             event_handler,
+            scheduler,
             should_quit: false,
         })
+    }
+
+    pub fn scheduler(&self) -> &Scheduler {
+        &self.scheduler
+    }
+
+    pub async fn initialize(&mut self) {
+        self.project.update_targets_for_selected_directory(&self.scheduler);
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -43,7 +55,7 @@ impl App {
 
         while !self.should_quit {
             // Check for completed target loading results
-            self.project.update_loaded_target_results();
+            self.project.update_loaded_target_results(&self.scheduler).await;
 
             terminal.draw(|f| {
                 self.ui.draw(f, &self.project);
@@ -73,7 +85,7 @@ impl App {
                 }
                 _ => {
                     self.event_handler
-                        .handle_key_event(key, &mut self.project, &mut self.ui)
+                        .handle_key_event(key, &mut self.project, &mut self.ui, &self.scheduler)
                         .await?;
                 }
             },

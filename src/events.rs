@@ -2,6 +2,7 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::buck::BuckProject;
+use crate::scheduler::Scheduler;
 use crate::ui::{Pane, PaneGroup, UI};
 use tracing::debug;
 
@@ -17,11 +18,12 @@ impl EventHandler {
         key: KeyEvent,
         project: &mut BuckProject,
         ui: &mut UI,
+        scheduler: &Scheduler,
     ) -> Result<()> {
         if ui.search_mode {
             self.handle_search_mode(key, project, ui).await?;
         } else {
-            self.handle_normal_mode(key, project, ui).await?;
+            self.handle_normal_mode(key, project, ui, scheduler).await?;
         }
         Ok(())
     }
@@ -60,6 +62,7 @@ impl EventHandler {
         key: KeyEvent,
         project: &mut BuckProject,
         ui: &mut UI,
+        scheduler: &Scheduler,
     ) -> Result<()> {
         match key.code {
             KeyCode::Char('/') => {
@@ -83,11 +86,11 @@ impl EventHandler {
                         // In explorer mode, 'h' goes to parent directory, but keeps focus on current dir pane
                         if let Some(parent) = project.current_path.parent() {
                             let previous_current = project.current_path.clone();
-                            project.navigate_to_directory(parent.to_path_buf());
+                            project.navigate_to_directory(parent.to_path_buf(), scheduler);
                             // Select the directory we came from (previous current directory)
                             project.selected_directory = previous_current;
                             // Update targets for the newly selected directory
-                            project.update_targets_for_selected_directory();
+                            project.update_targets_for_selected_directory(scheduler);
                         }
                         // Always keep focus on current directory pane (never focus on parent pane)
                         ui.current_pane = Pane::CurrentDirectory;
@@ -106,7 +109,7 @@ impl EventHandler {
                     PaneGroup::Explorer => {
                         // In explorer mode, 'l' enters selected directory, keeps focus on current dir pane
                         if project.selected_directory != project.current_path {
-                            project.navigate_to_directory(project.selected_directory.clone());
+                            project.navigate_to_directory(project.selected_directory.clone(), scheduler);
                         }
                         // Always keep focus on current directory pane
                         ui.current_pane = Pane::CurrentDirectory;
@@ -134,10 +137,10 @@ impl EventHandler {
                         {
                             project.selected_directory = next_dir.clone();
                             // Update targets for the newly selected directory
-                            project.update_targets_for_selected_directory();
+                            project.update_targets_for_selected_directory(scheduler);
                         }
                     }
-                    Pane::Targets => project.next_target(),
+                    Pane::Targets => project.next_target(scheduler),
                     Pane::Details => {}
                 }
             }
@@ -154,10 +157,10 @@ impl EventHandler {
                         {
                             project.selected_directory = prev_dir.clone();
                             // Update targets for the newly selected directory
-                            project.update_targets_for_selected_directory();
+                            project.update_targets_for_selected_directory(scheduler);
                         }
                     }
-                    Pane::Targets => project.prev_target(),
+                    Pane::Targets => project.prev_target(scheduler),
                     Pane::Details => {}
                 }
             }
@@ -169,7 +172,7 @@ impl EventHandler {
                     Pane::CurrentDirectory => {
                         // Navigate into selected directory or switch to inspector
                         if project.selected_directory != project.current_path {
-                            project.navigate_to_directory(project.selected_directory.clone());
+                            project.navigate_to_directory(project.selected_directory.clone(), scheduler);
                         } else {
                             // If current directory is selected, switch to inspector
                             ui.current_group = PaneGroup::Inspector;

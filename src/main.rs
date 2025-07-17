@@ -5,6 +5,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 mod app;
 mod buck;
 mod events;
+mod scheduler;
 mod ui;
 use tracing::info;
 
@@ -39,6 +40,10 @@ async fn main() -> Result<()> {
     let project_path = args.path.unwrap_or_else(|| ".".to_string());
 
     let mut app = App::new(project_path).await?;
+    
+    // Request targets for the initial current directory if it has Buck files
+    app.initialize().await;
+    
     app.run().await?;
 
     Ok(())

@@ -4,22 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::debug;
 
-#[derive(Debug)]
-struct ActiveLoadRequest {
-    dir_path: PathBuf,
-    token: CancellationToken,
-}
-
-#[derive(Debug)]
-struct ActiveDetailRequest {
-    dir_path: PathBuf,
-    target_index: usize,
-    token: CancellationToken,
-}
+use crate::scheduler::{Priority, Scheduler, Task, TaskId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuckTarget {
@@ -212,23 +201,18 @@ impl BuckDirectory {
 pub struct BuckProject {
     pub root_path: PathBuf,
     pub current_path: PathBuf,
-    // pub directories: Vec<BuckDirectory>,
     pub directories: HashMap<PathBuf, BuckDirectory>,
     pub selected_directory: PathBuf,
     pub selected_target: usize,
     pub search_query: String,
-    // used in the UI to display for the list of targets in the targets panel
     pub filtered_targets: Vec<BuckTarget>,
-
     pub cells: HashMap<String, PathBuf>,
-    pub target_loader_tx: Option<mpsc::UnboundedSender<(PathBuf, CancellationToken)>>,
-    pub target_result_rx: Option<mpsc::UnboundedReceiver<(PathBuf, Result<Vec<BuckTarget>>)>>,
-    pub target_detail_loader_tx:
-        Option<mpsc::UnboundedSender<(PathBuf, usize, String, CancellationToken)>>,
-    pub target_detail_result_rx:
-        Option<mpsc::UnboundedReceiver<(PathBuf, usize, Result<TargetDetails>)>>,
-    active_load_request: Option<ActiveLoadRequest>,
-    active_detail_request: Option<ActiveDetailRequest>,
+
+    // Scheduler integration
+    pub target_results: Arc<Mutex<Vec<(PathBuf, Result<Vec<BuckTarget>>)>>>,
+    pub target_detail_results: Arc<Mutex<Vec<(PathBuf, usize, Result<TargetDetails>)>>>,
+    active_load_tasks: HashMap<PathBuf, TaskId>,
+    active_detail_tasks: HashMap<(PathBuf, usize), TaskId>,
 }
 
 impl BuckProject {
@@ -242,19 +226,6 @@ impl BuckProject {
             ));
         }
 
-        let (loader_tx, loader_rx) = mpsc::unbounded_channel();
-        let (result_tx, result_rx) = mpsc::unbounded_channel();
-        let (detail_loader_tx, detail_loader_rx) = mpsc::unbounded_channel();
-        let (detail_result_tx, detail_result_rx) = mpsc::unbounded_channel();
-
-        // Spawn background task for loading targets
-        tokio::spawn(Self::target_loader_task(loader_rx, result_tx));
-        // Spawn background task for loading target details
-        tokio::spawn(Self::target_detail_loader_task(
-            detail_loader_rx,
-            detail_result_tx,
-        ));
-
         let current_path = root_path.clone();
         let selected_directory = current_path.clone();
 
@@ -267,102 +238,90 @@ impl BuckProject {
             search_query: String::new(),
             filtered_targets: Vec::new(),
             cells: HashMap::new(),
-            target_loader_tx: Some(loader_tx),
-            target_result_rx: Some(result_rx),
-            target_detail_loader_tx: Some(detail_loader_tx),
-            target_detail_result_rx: Some(detail_result_rx),
-            active_load_request: None,
-            active_detail_request: None,
+            target_results: Arc::new(Mutex::new(Vec::new())),
+            target_detail_results: Arc::new(Mutex::new(Vec::new())),
+            active_load_tasks: HashMap::new(),
+            active_detail_tasks: HashMap::new(),
         };
 
         project.load_cells().await?;
 
-        // Request targets for the initial current directory if it has Buck files
-        project.update_targets_for_selected_directory();
-
         Ok(project)
     }
 
-    async fn target_loader_task(
-        mut loader_rx: mpsc::UnboundedReceiver<(PathBuf, CancellationToken)>,
-        result_tx: mpsc::UnboundedSender<(PathBuf, Result<Vec<BuckTarget>>)>,
-    ) {
-        while let Some((path, cancel_token)) = loader_rx.recv().await {
-            let result = tokio::select! {
-                _ = cancel_token.cancelled() => {
-                    continue; // Skip if cancelled
-                }
-                result = Self::load_targets_from_directory_static(&path) => {
-                    debug!("get targets for {} , result: {:?}", path.display(), result);
+    fn create_target_loading_task(
+        path: PathBuf,
+        results: Arc<Mutex<Vec<(PathBuf, Result<Vec<BuckTarget>>)>>>,
+    ) -> Task {
+        let path_clone = path.clone();
+        Task::user(
+            Priority::Normal,
+            Box::pin(async move {
+                let result = Self::load_targets_from_directory_static(&path_clone).await;
+                debug!(
+                    "get targets for {} , result: {:?}",
+                    path_clone.display(),
                     result
-                }
-            };
+                );
 
-            if !cancel_token.is_cancelled() {
-                let _ = result_tx.send((path, result));
-            }
-        }
+                let mut results = results.lock().await;
+                results.push((path_clone, result));
+            }),
+        )
     }
 
-    async fn target_detail_loader_task(
-        mut detail_loader_rx: mpsc::UnboundedReceiver<(PathBuf, usize, String, CancellationToken)>,
-        detail_result_tx: mpsc::UnboundedSender<(PathBuf, usize, Result<TargetDetails>)>,
-    ) {
-        while let Some((dir_path, target_index, target_label, cancel_token)) =
-            detail_loader_rx.recv().await
-        {
-            let result = tokio::select! {
-                _ = cancel_token.cancelled() => {
-                    continue; // Skip if cancelled
-                }
-                result = Self::get_target_details_static_async(&target_label) => {
-                    result
-                }
-            };
+    fn create_target_detail_loading_task(
+        dir_path: PathBuf,
+        target_index: usize,
+        target_label: String,
+        results: Arc<Mutex<Vec<(PathBuf, usize, Result<TargetDetails>)>>>,
+    ) -> Task {
+        Task::user(
+            Priority::Normal,
+            Box::pin(async move {
+                let result = Self::get_target_details_static_async(&target_label).await;
 
-            if !cancel_token.is_cancelled() {
-                let _ = detail_result_tx.send((dir_path, target_index, result));
-            }
-        }
+                let mut results = results.lock().await;
+                results.push((dir_path, target_index, result));
+            }),
+        )
     }
 
-    // request targets for the currently selected directory, if loaded, update the filtered targets
-    // which is used to display the list of targets in the targets panel
-    pub fn request_targets_for_directory(&mut self, dir: PathBuf) {
+    pub fn request_targets_for_directory(&mut self, dir: PathBuf, scheduler: &Scheduler) {
         // Check early if we should skip this request
         {
-            if let Some(dir) = &self.directories.get(&dir)
-                && (dir.targets_loaded || dir.targets_loading || !dir.has_buck_file)
+            if let Some(dir_info) = &self.directories.get(&dir)
+                && (dir_info.targets_loaded || dir_info.targets_loading || !dir_info.has_buck_file)
             {
                 self.update_filtered_targets_with_reset(true);
                 return;
             }
         }
 
-        // Cancel previous request if any and reset its loading state
-        if let Some(active_request) = &self.active_load_request {
-            active_request.token.cancel();
-            // Reset loading state for the previously loading directory
-            self.directories.get_mut(&dir).unwrap().targets_loading = true;
+        // Cancel previous request if any
+        if let Some(task_id) = self.active_load_tasks.remove(&dir) {
+            scheduler.cancel(task_id);
         }
-
-        // Create new load request
-        let token = CancellationToken::new();
-        self.active_load_request = Some(ActiveLoadRequest {
-            dir_path: dir.clone(),
-            token: token.clone(),
-        });
 
         // Mark as loading
-        self.directories.get_mut(&dir).unwrap().targets_loading = true;
-
-        // Send request to background task
-        if let Some(tx) = &self.target_loader_tx {
-            let _ = tx.send((dir, token));
+        if let Some(dir_info) = self.directories.get_mut(&dir) {
+            dir_info.targets_loading = true;
         }
+
+        // Create and dispatch new task
+        let task = Self::create_target_loading_task(dir.clone(), self.target_results.clone());
+        let task_id = task.id;
+
+        scheduler.dispatch_micro(task);
+        self.active_load_tasks.insert(dir, task_id);
     }
 
-    pub fn request_target_details(&mut self, dir_path: PathBuf, target_index: usize) {
+    pub fn request_target_details(
+        &mut self,
+        dir_path: PathBuf,
+        target_index: usize,
+        scheduler: &Scheduler,
+    ) {
         let dir = self.directories.get(&dir_path).unwrap();
         if target_index >= dir.targets.len() {
             return;
@@ -373,35 +332,35 @@ impl BuckProject {
             return; // Already loaded
         }
 
+        let task_key = (dir_path.clone(), target_index);
+
         // Cancel previous detail request if any
-        if let Some(active_request) = &self.active_detail_request {
-            active_request.token.cancel();
+        if let Some(task_id) = self.active_detail_tasks.remove(&task_key) {
+            scheduler.cancel(task_id);
         }
 
         let target_label = target.name.clone();
 
-        // Create new detail request
-        let token = CancellationToken::new();
-        self.active_detail_request = Some(ActiveDetailRequest {
-            dir_path: dir_path.clone(),
+        // Create and dispatch new task
+        let task = Self::create_target_detail_loading_task(
+            dir_path.clone(),
             target_index,
-            token: token.clone(),
-        });
+            target_label,
+            self.target_detail_results.clone(),
+        );
+        let task_id = task.id;
 
-        // Send request to background task
-        if let Some(tx) = &self.target_detail_loader_tx {
-            let _ = tx.send((dir_path, target_index, target_label, token));
-        }
+        scheduler.dispatch_micro(task);
+        self.active_detail_tasks.insert(task_key, task_id);
     }
 
-    pub fn update_loaded_target_results(&mut self) {
+    // Update the targets and target details data model, would be rendered in ui
+    pub async fn update_loaded_target_results(&mut self, scheduler: &Scheduler) {
         // Process target list results
-        let mut target_results_to_process = Vec::new();
-        if let Some(rx) = &mut self.target_result_rx {
-            while let Ok((dir_path, result)) = rx.try_recv() {
-                target_results_to_process.push((dir_path, result));
-            }
-        }
+        let target_results_to_process = {
+            let mut results = self.target_results.lock().await;
+            std::mem::take(&mut *results)
+        };
 
         for (dir_path, result) in target_results_to_process {
             debug!(
@@ -415,12 +374,8 @@ impl BuckProject {
             debug!("dir: {:?}", dir);
             dir.targets_loading = false;
 
-            // Clear active load request if this is the one that was loading
-            if let Some(active_request) = &self.active_load_request
-                && active_request.dir_path == dir.path
-            {
-                self.active_load_request = None;
-            }
+            // Clear active load task if this is the one that was loading
+            self.active_load_tasks.remove(&dir_path);
 
             let current_selected_dir = dir.path == self.selected_directory;
 
@@ -448,31 +403,25 @@ impl BuckProject {
                 self.update_filtered_targets();
                 // Trigger detail loading for the first target (which is now selected)
                 if !self.filtered_targets.is_empty() {
-                    self.request_target_details_for_selected();
+                    self.request_target_details_for_selected(scheduler);
                 }
             }
         }
 
         // Process target detail results
-        let mut detail_results_to_process = Vec::new();
-        if let Some(rx) = &mut self.target_detail_result_rx {
-            while let Ok((dir_index, target_index, result)) = rx.try_recv() {
-                detail_results_to_process.push((dir_index, target_index, result));
-            }
-        }
+        let detail_results_to_process = {
+            let mut results = self.target_detail_results.lock().await;
+            std::mem::take(&mut *results)
+        };
 
         for (dir_path, target_index, result) in detail_results_to_process {
             let dir = self.directories.get_mut(&dir_path).unwrap();
             if target_index < dir.targets.len() {
                 let target = &mut dir.targets[target_index];
 
-                // Clear active detail request if this is the one that was loading
-                if let Some(active_request) = &self.active_detail_request
-                    && active_request.dir_path == dir_path
-                    && active_request.target_index == target_index
-                {
-                    self.active_detail_request = None;
-                }
+                // Clear active detail task if this is the one that was loading
+                self.active_detail_tasks
+                    .remove(&(dir_path.clone(), target_index));
 
                 match result {
                     Ok(details) => {
@@ -725,15 +674,15 @@ impl BuckProject {
         self.filtered_targets.get(self.selected_target)
     }
 
-    pub fn next_target(&mut self) {
+    pub fn next_target(&mut self, scheduler: &Scheduler) {
         if !self.filtered_targets.is_empty() {
             self.selected_target = (self.selected_target + 1) % self.filtered_targets.len();
             // Request target details for the newly selected target
-            self.request_target_details_for_selected();
+            self.request_target_details_for_selected(scheduler);
         }
     }
 
-    pub fn prev_target(&mut self) {
+    pub fn prev_target(&mut self, scheduler: &Scheduler) {
         if !self.filtered_targets.is_empty() {
             self.selected_target = if self.selected_target > 0 {
                 self.selected_target - 1
@@ -741,7 +690,7 @@ impl BuckProject {
                 self.filtered_targets.len() - 1
             };
             // Request target details for the newly selected target
-            self.request_target_details_for_selected();
+            self.request_target_details_for_selected(scheduler);
         }
     }
 
@@ -750,7 +699,7 @@ impl BuckProject {
         self.update_filtered_targets();
     }
 
-    fn request_target_details_for_selected(&mut self) {
+    fn request_target_details_for_selected(&mut self, scheduler: &Scheduler) {
         if let Some(selected_target) = self.get_selected_target() {
             // Find the actual index of the selected target in the directory's target list
             if let Some(selected_dir) = self.get_selected_directory()
@@ -759,7 +708,11 @@ impl BuckProject {
                     .iter()
                     .position(|t| t.name == selected_target.name && t.path == selected_target.path)
             {
-                self.request_target_details(self.selected_directory.clone(), actual_target_index);
+                self.request_target_details(
+                    self.selected_directory.clone(),
+                    actual_target_index,
+                    scheduler,
+                );
             }
         }
     }
@@ -795,17 +748,17 @@ impl BuckProject {
         UICurrentDirectory::new(&self.current_path)
     }
 
-    pub fn navigate_to_directory(&mut self, dir_path: PathBuf) {
+    pub fn navigate_to_directory(&mut self, dir_path: PathBuf, scheduler: &Scheduler) {
         self.current_path = dir_path.clone();
         self.selected_directory = dir_path;
         self.selected_target = 0;
         self.filtered_targets.clear();
 
         // Request targets for the new current directory
-        self.update_targets_for_selected_directory();
+        self.update_targets_for_selected_directory(scheduler);
     }
 
-    pub fn update_targets_for_selected_directory(&mut self) {
+    pub fn update_targets_for_selected_directory(&mut self, scheduler: &Scheduler) {
         // TODO: it is no need to get the current directories here, we can use BuckDirectory for
         // self.selected_directory
         let current_dirs = self.get_current_directories();
@@ -814,7 +767,7 @@ impl BuckProject {
             if selected_dir.has_buck_file {
                 // Find or add directory to our internal list for async loading
                 self.find_or_add_directory(&selected_dir.path);
-                self.request_targets_for_directory(self.selected_directory.clone());
+                self.request_targets_for_directory(self.selected_directory.clone(), scheduler);
             } else {
                 // Clear targets if directory doesn't have Buck files
                 self.filtered_targets.clear();
