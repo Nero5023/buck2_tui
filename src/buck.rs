@@ -79,7 +79,6 @@ impl BuckTarget {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct BuckDirectory {
     pub path: PathBuf,
@@ -262,12 +261,16 @@ impl BuckProject {
 
         Task::new(
             Priority::Normal,
-            vec!["buck2".to_owned(), "targets".to_owned(), ":".to_owned(), "-A".to_owned()],
+            vec![
+                "buck2".to_owned(),
+                "targets".to_owned(),
+                ":".to_owned(),
+                "-A".to_owned(),
+            ],
             path.clone(),
             task_on_success,
         )
     }
-
 
     pub fn request_targets_for_directory(&mut self, dir: PathBuf, scheduler: &Scheduler) {
         // Check early if we should skip this request
@@ -297,7 +300,6 @@ impl BuckProject {
         scheduler.dispatch_micro(task);
         self.active_load_tasks.insert(dir, task_id);
     }
-
 
     // Update the targets data model, would be rendered in ui
     pub async fn update_loaded_target_results(&mut self, _scheduler: &Scheduler) {
@@ -391,17 +393,21 @@ impl BuckProject {
         // Try to parse as JSON first (for -A output)
         if let Ok(json_array) = serde_json::from_str::<Vec<serde_json::Value>>(output) {
             for json in json_array {
-                let name = json.get("name")
+                let name = json
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
 
-                let rule_type = json.get("buck.type")
+                let rule_type = json
+                    .get("buck.type")
                     .and_then(|v| v.as_str())
+                    .map(|s| s.split(':').last().unwrap_or("unknown"))
                     .unwrap_or("unknown")
                     .to_string();
 
-                let deps = json.get("buck.deps")
+                let deps = json
+                    .get("buck.deps")
                     .and_then(|v| v.as_array())
                     .map(|arr| {
                         arr.iter()
@@ -411,15 +417,18 @@ impl BuckProject {
                     })
                     .unwrap_or_default();
 
-                let package = json.get("buck.package")
+                let package = json
+                    .get("buck.package")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let oncall = json.get("buck.oncall")
+                let oncall = json
+                    .get("buck.oncall")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let visibility = json.get("visibility")
+                let visibility = json
+                    .get("visibility")
                     .and_then(|v| v.as_array())
                     .map(|arr| {
                         arr.iter()
@@ -429,7 +438,8 @@ impl BuckProject {
                     })
                     .unwrap_or_default();
 
-                let default_target_platform = json.get("default_target_platform")
+                let default_target_platform = json
+                    .get("default_target_platform")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
@@ -469,7 +479,6 @@ impl BuckProject {
 
         Ok(targets)
     }
-
 
     pub fn update_filtered_targets(&mut self) {
         self.update_filtered_targets_with_reset(true);
@@ -591,7 +600,6 @@ impl BuckProject {
         self.search_query = query;
         self.update_filtered_targets();
     }
-
 
     pub fn get_parent_directories(&self) -> Vec<BuckDirectory> {
         if let Some(parent) = self.current_path.parent()
