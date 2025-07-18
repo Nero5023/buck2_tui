@@ -462,67 +462,7 @@ impl BuckProject {
         // Try to parse as JSON first (for -A output)
         if let Ok(json_array) = serde_json::from_str::<Vec<serde_json::Value>>(output) {
             for json in json_array {
-                let name = json
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-
-                let rule_type = json
-                    .get("buck.type")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.split(':').last().unwrap_or("unknown"))
-                    .unwrap_or("unknown")
-                    .to_string();
-
-                let deps = json
-                    .get("buck.deps")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str())
-                            .map(|s| s.to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let package = json
-                    .get("buck.package")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                let oncall = json
-                    .get("buck.oncall")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                let visibility = json
-                    .get("visibility")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str())
-                            .map(|s| s.to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let default_target_platform = json
-                    .get("default_target_platform")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                targets.push(BuckTarget {
-                    name,
-                    rule_type,
-                    path: dir_path.to_path_buf(),
-                    deps,
-                    details_loaded: true, // We have all the details from -A
-                    package,
-                    oncall,
-                    visibility,
-                    default_target_platform,
-                });
+                targets.push(BuckTarget::from_json_value(&json, dir_path));
             }
         } else {
             // Fallback to line-by-line parsing for legacy output
