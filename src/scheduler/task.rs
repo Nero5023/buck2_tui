@@ -1,6 +1,9 @@
+use core::task;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::hooks::Hooks;
@@ -14,12 +17,6 @@ pub enum TaskStage {
     Hooked,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TaskType {
-    User,
-    Preload,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Priority {
     Low = 0,
@@ -27,39 +24,38 @@ pub enum Priority {
     High = 2,
 }
 
-pub type TaskFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+pub type TaskOnSuccess =
+    Box<dyn FnOnce(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+// Task that runs cmds
 pub struct Task {
     pub id: TaskId,
     pub stage: TaskStage,
-    pub task_type: TaskType,
     pub priority: Priority,
     pub hooks: Arc<Hooks>,
-    pub future: Option<TaskFuture>,
+    task_on_success: Option<TaskOnSuccess>,
+    pub(crate) cmds: Vec<String>,
+    pub(crate) current_dir: PathBuf,
+    pub cancel_token: CancellationToken,
 }
 
 impl Task {
     pub fn new(
-        task_type: TaskType,
         priority: Priority,
-        future: TaskFuture,
+        cmds: Vec<String>,
+        current_dir: PathBuf,
+        task_on_success: TaskOnSuccess,
     ) -> Self {
         Self {
             id: Uuid::new_v4(),
             stage: TaskStage::Pending,
-            task_type,
             priority,
             hooks: Arc::new(Hooks::new()),
-            future: Some(future),
+            task_on_success: Some(task_on_success),
+            cmds,
+            current_dir,
+            cancel_token: CancellationToken::new(),
         }
-    }
-
-    pub fn user(priority: Priority, future: TaskFuture) -> Self {
-        Self::new(TaskType::User, priority, future)
-    }
-
-    pub fn preload(priority: Priority, future: TaskFuture) -> Self {
-        Self::new(TaskType::Preload, priority, future)
     }
 
     pub fn dispatch(&mut self) {
@@ -70,8 +66,20 @@ impl Task {
         self.stage = TaskStage::Hooked;
     }
 
-    pub fn take_future(&mut self) -> Option<TaskFuture> {
-        self.future.take()
+    // pub fn take_future(&mut self) -> Option<TaskOnSuccess> {
+    //     self.future.take()
+    // }
+
+    pub(crate) fn take_task_on_success(&mut self) -> Option<TaskOnSuccess> {
+        self.task_on_success.take()
+    }
+
+    pub fn cancel(&self) {
+        self.cancel_token.cancel();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel_token.is_cancelled()
     }
 }
 
@@ -80,9 +88,8 @@ impl std::fmt::Debug for Task {
         f.debug_struct("Task")
             .field("id", &self.id)
             .field("stage", &self.stage)
-            .field("task_type", &self.task_type)
             .field("priority", &self.priority)
-            .field("has_future", &self.future.is_some())
+            .field("has_task_on_success", &self.task_on_success.is_some())
             .finish()
     }
 }

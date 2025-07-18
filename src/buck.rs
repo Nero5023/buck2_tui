@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use futures::FutureExt;
 use nerd_font_symbols::dev as dev_symbols;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -254,19 +255,21 @@ impl BuckProject {
         results: Arc<Mutex<Vec<(PathBuf, Result<Vec<BuckTarget>>)>>>,
     ) -> Task {
         let path_clone = path.clone();
-        Task::user(
-            Priority::Normal,
-            Box::pin(async move {
-                let result = Self::load_targets_from_directory_static(&path_clone).await;
-                debug!(
-                    "get targets for {} , result: {:?}",
-                    path_clone.display(),
-                    result
-                );
 
+        let task_on_success = Box::new(|result: String| {
+            async move {
+                let res = Self::parse_buck2_targets_output_static(&result, &path_clone);
                 let mut results = results.lock().await;
-                results.push((path_clone, result));
-            }),
+                results.push((path_clone, res));
+            }
+            .boxed()
+        });
+
+        Task::new(
+            Priority::Normal,
+            vec!["buck2".to_owned(), "targets".to_owned(), ":".to_owned()],
+            path.clone(),
+            task_on_success,
         )
     }
 
@@ -276,14 +279,27 @@ impl BuckProject {
         target_label: String,
         results: Arc<Mutex<Vec<(PathBuf, usize, Result<TargetDetails>)>>>,
     ) -> Task {
-        Task::user(
-            Priority::Normal,
-            Box::pin(async move {
-                let result = Self::get_target_details_static_async(&target_label).await;
-
+        let dir_path_clone = dir_path.clone();
+        let task_on_success = Box::new(move |output: String| {
+            async move {
+                let target_label = target_label.clone();
+                let res = Self::parse_target_query_output_static(&output, &target_label);
                 let mut results = results.lock().await;
-                results.push((dir_path, target_index, result));
-            }),
+                results.push((dir_path_clone, target_index, res));
+            }
+            .boxed()
+        });
+
+        Task::new(
+            Priority::Normal,
+            vec![
+                "buck2".to_owned(),
+                "query".to_owned(),
+                "-A".to_owned(),
+                "target_label".to_owned(),
+            ],
+            dir_path.clone(),
+            task_on_success,
         )
     }
 
@@ -444,40 +460,15 @@ impl BuckProject {
         }
     }
 
-    async fn load_targets_from_directory_static(dir_path: &Path) -> Result<Vec<BuckTarget>> {
-        // Use buck2 targets command to get actual target information
-        let output = tokio::process::Command::new("buck2")
-            .arg("targets")
-            .arg(":")
-            .current_dir(dir_path)
-            .output()
-            .await?;
-
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            Self::parse_buck2_targets_output_static(&stdout, dir_path)
-        } else {
-            // If no BUCK or TARGET file exists, return empty target list
-            let buck_file = dir_path.join("BUCK");
-            let target_file = dir_path.join("TARGET");
-
-            if !buck_file.exists() && !target_file.exists() {
-                return Ok(Vec::new());
-            }
-            Err(anyhow!(
-                "Failed to get targets from directory: {}\nError: {}",
-                dir_path.display(),
-                String::from_utf8_lossy(&output.stderr)
-            ))
-        }
-    }
-
     async fn load_cells(&mut self) -> Result<()> {
         let output = Command::new("buck2")
             .arg("audit")
             .arg("cell")
             .arg("--json")
             .current_dir(&self.root_path)
+            .stdin(std::process::Stdio::null()) // Don't inherit stdin
+            .stdout(std::process::Stdio::piped()) // Capture stdout
+            .stderr(std::process::Stdio::piped()) // Capture stderr
             .output()?;
 
         if output.status.success() {
@@ -524,24 +515,6 @@ impl BuckProject {
         }
 
         Ok(targets)
-    }
-
-    async fn get_target_details_static_async(target_label: &str) -> Result<TargetDetails> {
-        // Try to get detailed information about the target
-        let output = tokio::process::Command::new("buck2")
-            .arg("query")
-            .arg("-A")
-            .arg(target_label)
-            .output()
-            .await;
-
-        match output {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                Self::parse_target_query_output_static(&stdout, target_label)
-            }
-            _ => Err(anyhow!("Failed to get target details")),
-        }
     }
 
     fn parse_target_query_output_static(output: &str, target_label: &str) -> Result<TargetDetails> {
