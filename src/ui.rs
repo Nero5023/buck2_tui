@@ -283,7 +283,7 @@ impl UI {
 
         lines.push(Line::from(vec![
             Span::styled("Name: ", Style::default().fg(Color::Cyan)),
-            Span::raw(&target.name),
+            Span::raw(&target.full_target_label_name),
         ]));
 
         lines.push(Line::from(vec![
@@ -293,7 +293,7 @@ impl UI {
 
         lines.push(Line::from(vec![
             Span::styled("Target Name: ", Style::default().fg(Color::Cyan)),
-            Span::raw(target.target_name()),
+            Span::raw(&target.name),
         ]));
 
         // Package Information

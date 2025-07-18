@@ -13,6 +13,7 @@ use crate::scheduler::{Priority, Scheduler, Task, TaskId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuckTarget {
+    pub full_target_label_name: String,
     pub name: String,
     pub rule_type: String,
     pub path: PathBuf,
@@ -76,7 +77,11 @@ impl BuckTarget {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let pkg = package.as_deref().unwrap_or("");
+        let full_target_label_name = format!("{pkg}:{}", name);
+
         BuckTarget {
+            full_target_label_name,
             name,
             rule_type,
             path: dir_path.to_path_buf(),
@@ -90,19 +95,7 @@ impl BuckTarget {
     }
 
     pub fn target_name(&self) -> String {
-        self.name
-            .split("//")
-            .last()
-            .unwrap()
-            .split(":")
-            .last()
-            .unwrap()
-            .to_string()
-    }
-
-    pub fn full_target_label_name(&self) -> String {
-        let pkg = self.package.as_deref().unwrap_or("");
-        format!("{pkg}:{}", self.target_name())
+        self.name.split(":").last().unwrap().to_string()
     }
 
     pub fn get_rule_language(&self) -> &str {
@@ -473,6 +466,7 @@ impl BuckProject {
                 }
 
                 targets.push(BuckTarget {
+                    full_target_label_name: line.to_string(),
                     name: line.to_string(),
                     rule_type: "unknown".to_string(),
                     path: dir_path.to_path_buf(),
