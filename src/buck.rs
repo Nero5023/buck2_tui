@@ -277,14 +277,19 @@ pub struct BuckProject {
 
 impl BuckProject {
     pub async fn new(project_path: String) -> Result<Self> {
-        let root_path = PathBuf::from(project_path);
+        let initial_path = PathBuf::from(project_path);
 
-        if !root_path.exists() {
+        if !initial_path.exists() {
             return Err(anyhow!(
                 "Project path does not exist: {}",
-                root_path.display()
+                initial_path.display()
             ));
         }
+
+        // Convert to absolute path for consistent navigation
+        let root_path = initial_path.canonicalize().map_err(|e| {
+            anyhow!("Failed to canonicalize path {}: {}", initial_path.display(), e)
+        })?;
 
         let current_path = root_path.clone();
         let selected_directory = current_path.clone();
@@ -637,8 +642,11 @@ impl BuckProject {
     }
 
     pub fn navigate_to_directory(&mut self, dir_path: PathBuf, scheduler: &Scheduler) {
-        self.current_path = dir_path.clone();
-        self.selected_directory = dir_path;
+        // Convert to absolute path for consistent navigation
+        let absolute_path = dir_path.canonicalize().unwrap_or(dir_path);
+        
+        self.current_path = absolute_path.clone();
+        self.selected_directory = absolute_path;
         self.selected_target = 0;
         self.filtered_targets.clear();
 
