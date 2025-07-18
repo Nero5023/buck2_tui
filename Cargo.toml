@@ -45,6 +45,9 @@ which = "6.0"
 # nerd font symbols
 nerd-font-symbols = "0.3.0"
 
+# Directory operations
+dirs = "5.0"
+
 # Scheduler dependencies
 async-priority-channel = "0.2.0"
 uuid = { version = "1.0", features = ["v4"] }

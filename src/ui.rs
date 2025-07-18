@@ -18,6 +18,7 @@ pub struct UI {
 pub enum Pane {
     ParentDirectory,
     CurrentDirectory,
+    SelectedDirectory,
     Targets,
     Details,
 }
@@ -38,20 +39,43 @@ impl UI {
     }
 
     pub fn draw(&self, f: &mut Frame, project: &BuckProject) {
-        let chunks = Layout::default()
+        // Split main area into top path bar and main content
+        let main_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Path bar (no border, just text)
+                Constraint::Min(0),    // Main content
+            ])
+            .split(f.area());
+
+        // Draw path bar at the top
+        self.draw_path_bar(f, main_chunks[0], project);
+
+        // Split main content into four horizontal panes
+        let content_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Percentage(20), // Parent directory
                 Constraint::Percentage(25), // Current directory
-                Constraint::Percentage(30), // Target list
+                Constraint::Percentage(30), // Target list + Selected directory (vertical split)
                 Constraint::Percentage(25), // Target details
             ])
-            .split(f.area());
+            .split(main_chunks[1]);
 
-        self.draw_parent_directory(f, chunks[0], project);
-        self.draw_current_directory(f, chunks[1], project);
-        self.draw_targets(f, chunks[2], project);
-        self.draw_details(f, chunks[3], project);
+        // Split the targets column vertically to add selected directory underneath
+        let targets_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(60), // Targets pane
+                Constraint::Percentage(40), // Selected directory pane
+            ])
+            .split(content_chunks[2]);
+
+        self.draw_parent_directory(f, content_chunks[0], project);
+        self.draw_current_directory(f, content_chunks[1], project);
+        self.draw_targets(f, targets_chunks[0], project);
+        self.draw_selected_directory(f, targets_chunks[1], project);
+        self.draw_details(f, content_chunks[3], project);
 
         if self.search_mode {
             self.draw_search_popup(f, project);
@@ -165,6 +189,78 @@ impl UI {
             "Current: {}",
             project
                 .current_path
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_else(|| ".".into())
+        );
+
+        let directories_list = List::new(directories)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(block_style),
+            )
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+
+        f.render_widget(directories_list, area);
+    }
+
+    fn draw_selected_directory(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
+        // Get contents of the selected directory from current directory pane
+        let selected_dirs = if project.selected_directory != project.current_path {
+            // Show contents of the selected directory
+            let selected_ui_dir = crate::buck::UICurrentDirectory::new(&project.selected_directory);
+            selected_ui_dir.sub_directories
+        } else {
+            // If current directory is selected, show empty or current contents
+            Vec::new()
+        };
+
+        let directories: Vec<ListItem> = selected_dirs
+            .iter()
+            .map(|dir| {
+                let display_path = if dir.path == project.selected_directory {
+                    ".".to_string()
+                } else {
+                    dir.path
+                        .file_name()
+                        .unwrap_or_else(|| dir.path.as_os_str())
+                        .to_string_lossy()
+                        .to_string()
+                };
+
+                let target_count = if let Some(project_dir) = project.directories.get(&dir.path) {
+                    if project_dir.targets_loading {
+                        "loading...".to_string()
+                    } else {
+                        project_dir.targets.len().to_string()
+                    }
+                } else if dir.targets_loading {
+                    "loading...".to_string()
+                } else if dir.has_buck_file {
+                    "—".to_string()  // Not loaded yet but has Buck files
+                } else {
+                    "—".to_string()  // Not loaded and no Buck files
+                };
+                
+                let buck_indicator = if dir.has_buck_file { "📦" } else { "📁" };
+                let text = format!("{} {} ({})", buck_indicator, display_path, target_count);
+
+                ListItem::new(text)
+            })
+            .collect();
+
+        let block_style = if self.current_pane == Pane::SelectedDirectory {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+
+        let title = format!(
+            "Selected: {}",
+            project
+                .selected_directory
                 .file_name()
                 .map(|n| n.to_string_lossy())
                 .unwrap_or_else(|| ".".into())
@@ -480,5 +576,29 @@ impl UI {
                 Constraint::Percentage((100 - percent_x) / 2),
             ])
             .split(popup_layout[1])[1]
+    }
+
+    fn draw_path_bar(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
+        // Convert path to a more readable format, similar to yazi
+        let current_path = &project.current_path;
+        
+        // Try to make path relative to home directory for cleaner display
+        let display_path = if let Some(home) = dirs::home_dir() {
+            if let Ok(relative) = current_path.strip_prefix(&home) {
+                format!("~/{}", relative.display())
+            } else {
+                current_path.display().to_string()
+            }
+        } else {
+            current_path.display().to_string()
+        };
+
+        let path_text = vec![Line::from(vec![
+            Span::styled(display_path, Style::default().fg(Color::Yellow)),
+        ])];
+
+        let path_bar = Paragraph::new(path_text);
+
+        f.render_widget(path_bar, area);
     }
 }
