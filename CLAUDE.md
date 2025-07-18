@@ -112,55 +112,65 @@ The Buck TUI includes a comprehensive task scheduling system inspired by Yazi's 
 
 ### Task Structure
 - **Task stages**: `Pending` → `Dispatched` → `Hooked`
-- **Task types**: `User` (user-initiated), `Preload` (background)
-- **Priority levels**: `HIGH`, `NORMAL`, `LOW`
+- **Priority levels**: `LOW`, `NORMAL`, `HIGH`
+- **Command-based**: Tasks execute external commands (like `buck2`) with proper stdio handling
+- **Cancellation**: Each task has its own `CancellationToken` for responsive cancellation
 
 ### Scheduler Architecture
-- **Two-tier workers**: Micro (quick tasks) + Macro (heavyweight operations)
+- **Command execution**: Tasks run external commands with captured stdout/stderr
 - **Priority queues**: `async_priority_channel` for task scheduling
 - **Shared state**: `Arc<Mutex<Ongoing>>` for thread-safe task tracking
 - **Integration**: Available through `App::scheduler()` method
+- **Stdio isolation**: All external commands use piped stdio to prevent TUI corruption
 
 ## Cancellation Mechanisms
 
-### 1. Basic Cancellation
+### 1. Task-Level Cancellation
 ```rust
-// scheduler.rs:cancel()
-pub fn cancel(&self, id: Id) -> bool {
-    let mut ongoing = self.ongoing.lock();
-    ongoing.all.remove(&id).is_some()
+// Each task has its own cancellation token
+pub struct Task {
+    pub cancel_token: CancellationToken,
+    // ... other fields
+}
+
+pub fn cancel(&self, id: TaskId) -> bool {
+    // Cancel the task's token to stop work immediately
+    task.cancel();
 }
 ```
 
-### 2. Hook System
-- Tasks register cleanup functions via `Hooks`
-- Supports both sync and async cleanup: `Hook::Sync` | `Hook::Async`
-- Runs automatically on task completion or cancellation
-
-### 3. Process Cancellation
+### 2. Process Cancellation
 ```rust
-// For background processes
-select! {
-    _ = cancel.recv() => {
-        child.start_kill().ok();
-        cancel.close();
-        break;
+// Commands are killed when tasks are cancelled
+tokio::select! {
+    _ = cancel_token.cancelled() => {
+        let _ = child.kill().await;
+        return Ok(());
     }
-    // ... handle process output
+    result = async { /* command execution */ } => {
+        result
+    }
 }
 ```
 
-### 4. CancellationToken
-- Used for preview operations and plugins
-- Lightweight cancellation for short-lived tasks
+### 3. Hook System
+- Tasks register cleanup functions via `Hooks`
+- Runs automatically on task completion or cancellation
+- Supports both sync and async cleanup operations
 
-## Task Interruption Flow
+### 4. Stdio Isolation
+- All external commands use `stdin(null)`, `stdout(piped)`, `stderr(piped)`
+- Prevents command output from corrupting the TUI display
+- Commands are properly isolated from the terminal interface
 
-1. **New task arrival** → Scheduler evaluates priority
-2. **Existing task check** → Cancel if lower priority or conflicting
-3. **Cleanup execution** → Run registered hooks
-4. **Resource deallocation** → Kill processes, close channels
-5. **New task dispatch** → Start replacement task
+## Task Execution Flow
+
+1. **Task creation** → Create task with commands, current directory, and success callback
+2. **Task dispatch** → Add to priority queue based on task priority
+3. **Command execution** → Spawn external process with isolated stdio
+4. **Cancellation monitoring** → Use `tokio::select!` to monitor cancellation token
+5. **Result processing** → Run success callback with command output
+6. **Cleanup** → Execute cleanup hooks and remove from tracking
 
 ## Implementation Files
 
@@ -177,9 +187,43 @@ select! {
 - `yazi-actor/src/tasks/cancel.rs` - Actor cancellation handler
 
 ## Design Benefits
-- **Multi-level cancellation** - Different strategies for different task types
-- **Resource safety** - Proper cleanup prevents leaks
+- **Command-based architecture** - Clean separation between task logic and command execution
+- **Responsive cancellation** - Tasks can be cancelled immediately with process termination
+- **TUI protection** - Stdio isolation prevents external commands from corrupting the display
+- **Resource safety** - Proper cleanup prevents leaks and zombie processes
 - **Priority-based** - Important tasks can interrupt less critical ones
-- **Thread-safe** - Concurrent access handled via Arc<Mutex<>>
-- **Async-friendly** - Built on Rust's async ecosystem
+- **Thread-safe** - Concurrent access handled via `Arc<Mutex<>>`
+- **Async-friendly** - Built on Rust's async ecosystem with proper cancellation support
+
+## Buck2 Integration
+
+The scheduler system is specifically designed to handle Buck2 commands efficiently:
+
+### Target Loading
+```rust
+// Create task to load targets from a directory
+let task = Task::new(
+    Priority::Normal,
+    vec!["buck2".to_owned(), "targets".to_owned(), ":".to_owned()],
+    dir_path.clone(),
+    success_callback,
+);
+```
+
+### Target Details
+```rust
+// Create task to query target details
+let task = Task::new(
+    Priority::Normal,
+    vec!["buck2".to_owned(), "query".to_owned(), "-A".to_owned(), target_label],
+    dir_path.clone(),
+    details_callback,
+);
+```
+
+### Key Features
+- **Automatic cancellation** - Previous Buck2 commands are cancelled when new ones are needed
+- **Proper stdio handling** - Buck2 output doesn't interfere with the TUI
+- **Async callbacks** - Results are processed asynchronously and update the UI
+- **Error handling** - Failed commands are handled gracefully with fallback behavior
 
