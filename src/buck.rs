@@ -18,6 +18,7 @@ pub struct BuckTarget {
     pub rule_type: String,
     pub path: PathBuf,
     pub deps: Vec<String>,
+    // Right now it is not used, later we can use it to check if we run a buck2 uquery proces on it.
     pub details_loaded: bool,
     pub package: Option<String>,
     pub oncall: Option<String>,

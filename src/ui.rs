@@ -321,6 +321,7 @@ impl UI {
         }
 
         lines.push(Line::from(""));
+        lines.push(Line::from(""));
 
         // Visibility Section
         if !target.visibility.is_empty() {
@@ -347,6 +348,7 @@ impl UI {
                     break;
                 }
             }
+            lines.push(Line::from(""));
             lines.push(Line::from(""));
         }
 
@@ -376,6 +378,7 @@ impl UI {
                 }
             }
             lines.push(Line::from(""));
+            lines.push(Line::from(""));
         } else {
             lines.push(Line::from(vec![Span::styled(
                 "▶ Dependencies",
@@ -388,6 +391,7 @@ impl UI {
                 Span::raw("  "),
                 Span::styled("No dependencies", Style::default().fg(Color::Gray)),
             ]));
+            lines.push(Line::from(""));
             lines.push(Line::from(""));
         }
 
