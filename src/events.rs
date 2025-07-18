@@ -99,7 +99,6 @@ impl EventHandler {
                         // In inspector mode, 'h' moves left within inspector panes
                         ui.current_pane = match ui.current_pane {
                             Pane::Details => Pane::Targets,
-                            Pane::SelectedDirectory => Pane::Targets,
                             _ => ui.current_pane,
                         };
                     }
@@ -122,7 +121,6 @@ impl EventHandler {
                         // In inspector mode, 'l' moves right within inspector panes
                         ui.current_pane = match ui.current_pane {
                             Pane::Targets => Pane::Details,
-                            Pane::SelectedDirectory => Pane::Details,
                             _ => ui.current_pane,
                         };
                     }
@@ -149,14 +147,7 @@ impl EventHandler {
                         // Navigate through selected directory contents
                         // For now, no navigation within selected directory
                     }
-                    Pane::Targets => {
-                        // Check if we're at the bottom of targets and should move to selected directory
-                        if project.selected_target >= project.filtered_targets.len().saturating_sub(1) && !project.filtered_targets.is_empty() {
-                            ui.current_pane = Pane::SelectedDirectory;
-                        } else {
-                            project.next_target(scheduler);
-                        }
-                    }
+                    Pane::Targets => project.next_target(scheduler),
                     Pane::Details => {}
                 }
             }
@@ -177,7 +168,7 @@ impl EventHandler {
                         }
                     }
                     Pane::SelectedDirectory => {
-                        // Move back up to targets pane
+                        // This pane should never be focused, but handle it gracefully
                         ui.current_pane = Pane::Targets;
                     }
                     Pane::Targets => project.prev_target(scheduler),
@@ -203,8 +194,8 @@ impl EventHandler {
                         }
                     }
                     Pane::SelectedDirectory => {
-                        // Navigate into the selected subdirectory
-                        // For now, no action
+                        // This pane should never be focused, but handle it gracefully
+                        ui.current_pane = Pane::Targets;
                     }
                     Pane::Targets => {
                         ui.current_pane = Pane::Details;

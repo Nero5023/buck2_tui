@@ -251,11 +251,8 @@ impl UI {
             })
             .collect();
 
-        let block_style = if self.current_pane == Pane::SelectedDirectory {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        // Selected Directory pane is never focused, so always use default style
+        let block_style = Style::default();
 
         let directories_list = List::new(directories)
             .block(
