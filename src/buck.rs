@@ -25,6 +25,70 @@ pub struct BuckTarget {
 }
 
 impl BuckTarget {
+    pub fn from_json_value(json: &serde_json::Value, dir_path: &Path) -> Self {
+        let name = json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let rule_type = json
+            .get("buck.type")
+            .and_then(|v| v.as_str())
+            .map(|s| s.split(':').last().unwrap_or("unknown"))
+            .unwrap_or("unknown")
+            .to_string();
+
+        let deps = json
+            .get("buck.deps")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let package = json
+            .get("buck.package")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let oncall = json
+            .get("buck.oncall")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let visibility = json
+            .get("visibility")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let default_target_platform = json
+            .get("default_target_platform")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        BuckTarget {
+            name,
+            rule_type,
+            path: dir_path.to_path_buf(),
+            deps,
+            details_loaded: true, // We have all the details from JSON
+            package,
+            oncall,
+            visibility,
+            default_target_platform,
+        }
+    }
+
     pub fn target_name(&self) -> String {
         self.name
             .split("//")
@@ -36,7 +100,12 @@ impl BuckTarget {
             .to_string()
     }
 
-    fn get_rule_language(&self) -> &str {
+    pub fn full_target_label_name(&self) -> String {
+        let pkg = self.package.as_deref().unwrap_or("");
+        format!("{pkg}:{}", self.target_name())
+    }
+
+    pub fn get_rule_language(&self) -> &str {
         // Remove prefix underscore and split by underscore to get the first part
         let rule_type = self.rule_type.strip_prefix('_').unwrap_or(&self.rule_type);
         rule_type.split('_').next().unwrap_or("unknown")

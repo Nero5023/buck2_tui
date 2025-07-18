@@ -270,25 +270,163 @@ impl UI {
     }
 
     fn format_target_details<'a>(&self, target: &'a BuckTarget) -> Vec<Line<'a>> {
-        vec![
-            Line::from(vec![
-                Span::styled("Name: ", Style::default().fg(Color::Cyan)),
-                Span::raw(&target.name),
-            ]),
-            Line::from(vec![
-                Span::styled("Rule Type: ", Style::default().fg(Color::Cyan)),
-                Span::raw(&target.rule_type),
-            ]),
-            Line::from(vec![
-                Span::styled("Path: ", Style::default().fg(Color::Cyan)),
-                Span::raw(target.path.display().to_string()),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Dependencies: ", Style::default().fg(Color::Cyan)),
-                Span::raw(format!("{}", target.deps.len())),
-            ]),
-        ]
+        let mut lines = vec![];
+
+        // Basic Information Section
+        lines.push(Line::from(vec![Span::styled(
+            "▶ Target Information",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(""));
+
+        lines.push(Line::from(vec![
+            Span::styled("Name: ", Style::default().fg(Color::Cyan)),
+            Span::raw(&target.name),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::styled("Rule Type: ", Style::default().fg(Color::Cyan)),
+            Span::raw(&target.rule_type),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::styled("Target Name: ", Style::default().fg(Color::Cyan)),
+            Span::raw(target.target_name()),
+        ]));
+
+        // Package Information
+        if let Some(package) = &target.package {
+            lines.push(Line::from(vec![
+                Span::styled("Package: ", Style::default().fg(Color::Cyan)),
+                Span::raw(package),
+            ]));
+        }
+
+        // Oncall Information
+        if let Some(oncall) = &target.oncall {
+            lines.push(Line::from(vec![
+                Span::styled("Oncall: ", Style::default().fg(Color::Cyan)),
+                Span::styled(oncall, Style::default().fg(Color::Yellow)),
+            ]));
+        }
+
+        // Platform Information
+        if let Some(platform) = &target.default_target_platform {
+            lines.push(Line::from(vec![
+                Span::styled("Default Platform: ", Style::default().fg(Color::Cyan)),
+                Span::raw(platform),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+
+        // Visibility Section
+        if !target.visibility.is_empty() {
+            lines.push(Line::from(vec![Span::styled(
+                "▶ Visibility",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]));
+            lines.push(Line::from(""));
+
+            for (i, visibility) in target.visibility.iter().enumerate() {
+                if i < 5 {
+                    // Show first 5 visibility rules
+                    lines.push(Line::from(vec![Span::raw("  • "), Span::raw(visibility)]));
+                } else if i == 5 {
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("... and {} more", target.visibility.len() - 5),
+                            Style::default().fg(Color::Gray),
+                        ),
+                    ]));
+                    break;
+                }
+            }
+            lines.push(Line::from(""));
+        }
+
+        // Dependencies Section
+        if !target.deps.is_empty() {
+            lines.push(Line::from(vec![Span::styled(
+                format!("▶ Dependencies ({})", target.deps.len()),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]));
+            lines.push(Line::from(""));
+
+            for (i, dep) in target.deps.iter().enumerate() {
+                if i < 10 {
+                    // Show first 10 dependencies
+                    lines.push(Line::from(vec![Span::raw("  • "), Span::raw(dep)]));
+                } else if i == 10 {
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("... and {} more", target.deps.len() - 10),
+                            Style::default().fg(Color::Gray),
+                        ),
+                    ]));
+                    break;
+                }
+            }
+            lines.push(Line::from(""));
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                "▶ Dependencies",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("No dependencies", Style::default().fg(Color::Gray)),
+            ]));
+            lines.push(Line::from(""));
+        }
+
+        // Technical Details Section
+        lines.push(Line::from(vec![Span::styled(
+            "▶ Technical Details",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(""));
+
+        lines.push(Line::from(vec![
+            Span::styled("Path: ", Style::default().fg(Color::Cyan)),
+            Span::raw(target.path.display().to_string()),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::styled("Details Loaded: ", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                if target.details_loaded { "✓" } else { "✗" },
+                if target.details_loaded {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::Red)
+                },
+            ),
+        ]));
+
+        // Language/Icon information
+        let (icon, _) = target.get_language_icon();
+        if !icon.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("Language Icon: ", Style::default().fg(Color::Cyan)),
+                Span::raw(format!("{} ({})", icon, target.get_rule_language())),
+            ]));
+        }
+
+        lines
     }
 
     fn draw_search_popup(&self, f: &mut Frame, project: &BuckProject) {

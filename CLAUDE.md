@@ -72,13 +72,17 @@ The application provides comprehensive Buck2 integration:
 - Regular directories shown with 📁 icon for full navigation capability
 
 ### Target Discovery
-- **Primary**: Uses `buck2 targets :` command to get accurate target information
-- **Enhanced**: Uses `buck2 query -A` for detailed target metadata
+- **Optimized**: Uses `buck2 targets : -A` command to get comprehensive target information in a single query
+- **Comprehensive**: Retrieves target names, rule types, dependencies, visibility, and metadata in one request
 - **Fallback**: Manual BUCK file parsing when buck2 commands are unavailable
 
 ### Target Information
-- Target names and rule types from buck2 commands
-- Dependency information when available
+- **Comprehensive details**: Target names, rule types, and target paths
+- **Package metadata**: Package information, oncall team details, and platform targets  
+- **Dependency analysis**: Complete dependency lists with smart truncation for readability
+- **Visibility rules**: Target visibility configuration and access controls
+- **Technical details**: Build platform information, loading status, and language detection
+- **Rich formatting**: Organized sections with visual indicators and color coding
 - Graceful degradation when buck2 is not installed or accessible
 
 ## File Structure
