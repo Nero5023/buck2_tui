@@ -18,10 +18,11 @@ The application follows a modular Rust architecture with async support:
 
 ## Key Features
 
-### Three-Pane Layout
-- **Left Pane**: Directory tree showing folders with BUCK files
-- **Middle Pane**: Target list for selected directory with fuzzy search
-- **Right Pane**: Detailed information about selected target
+### Four-Pane Layout
+- **Left Pane**: Parent directory listing showing sibling folders
+- **Current Directory Pane**: Current directory subdirectories with live target counts and loading status
+- **Targets Pane**: Target list for selected directory with fuzzy search
+- **Details Pane**: Comprehensive target information with organized sections
 
 ### Navigation Controls
 - `h/j/k/l` or arrow keys: Navigate between panes and within lists

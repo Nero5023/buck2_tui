@@ -135,10 +135,18 @@ impl UI {
                         .to_string()
                 };
 
-                let target_count = if dir.targets_loading {
+                let target_count = if let Some(project_dir) = project.directories.get(&dir.path) {
+                    if project_dir.targets_loading {
+                        "loading...".to_string()
+                    } else {
+                        project_dir.targets.len().to_string()
+                    }
+                } else if dir.targets_loading {
                     "loading...".to_string()
+                } else if dir.has_buck_file {
+                    "—".to_string()  // Not loaded yet but has Buck files
                 } else {
-                    dir.targets.len().to_string()
+                    "—".to_string()  // Not loaded and no Buck files
                 };
                 let buck_indicator = if dir.has_buck_file { "📦" } else { "📁" };
                 let text = format!("{} {} ({})", buck_indicator, display_path, target_count);
