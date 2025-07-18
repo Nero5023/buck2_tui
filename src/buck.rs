@@ -18,6 +18,10 @@ pub struct BuckTarget {
     pub path: PathBuf,
     pub deps: Vec<String>,
     pub details_loaded: bool,
+    pub package: Option<String>,
+    pub oncall: Option<String>,
+    pub visibility: Vec<String>,
+    pub default_target_platform: Option<String>,
 }
 
 impl BuckTarget {
@@ -75,11 +79,6 @@ impl BuckTarget {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct TargetDetails {
-    pub rule_type: String,
-    pub deps: Vec<String>,
-}
 
 #[derive(Debug, Clone)]
 pub struct BuckDirectory {
@@ -211,9 +210,7 @@ pub struct BuckProject {
 
     // Scheduler integration
     pub target_results: Arc<Mutex<Vec<(PathBuf, Result<Vec<BuckTarget>>)>>>,
-    pub target_detail_results: Arc<Mutex<Vec<(PathBuf, usize, Result<TargetDetails>)>>>,
     active_load_tasks: HashMap<PathBuf, TaskId>,
-    active_detail_tasks: HashMap<(PathBuf, usize), TaskId>,
 }
 
 impl BuckProject {
@@ -240,9 +237,7 @@ impl BuckProject {
             filtered_targets: Vec::new(),
             cells: HashMap::new(),
             target_results: Arc::new(Mutex::new(Vec::new())),
-            target_detail_results: Arc::new(Mutex::new(Vec::new())),
             active_load_tasks: HashMap::new(),
-            active_detail_tasks: HashMap::new(),
         };
 
         project.load_cells().await?;
@@ -267,41 +262,12 @@ impl BuckProject {
 
         Task::new(
             Priority::Normal,
-            vec!["buck2".to_owned(), "targets".to_owned(), ":".to_owned()],
+            vec!["buck2".to_owned(), "targets".to_owned(), ":".to_owned(), "-A".to_owned()],
             path.clone(),
             task_on_success,
         )
     }
 
-    fn create_target_detail_loading_task(
-        dir_path: PathBuf,
-        target_index: usize,
-        target_label: String,
-        results: Arc<Mutex<Vec<(PathBuf, usize, Result<TargetDetails>)>>>,
-    ) -> Task {
-        let dir_path_clone = dir_path.clone();
-        let task_on_success = Box::new(move |output: String| {
-            async move {
-                let target_label = target_label.clone();
-                let res = Self::parse_target_query_output_static(&output, &target_label);
-                let mut results = results.lock().await;
-                results.push((dir_path_clone, target_index, res));
-            }
-            .boxed()
-        });
-
-        Task::new(
-            Priority::Normal,
-            vec![
-                "buck2".to_owned(),
-                "query".to_owned(),
-                "-A".to_owned(),
-                "target_label".to_owned(),
-            ],
-            dir_path.clone(),
-            task_on_success,
-        )
-    }
 
     pub fn request_targets_for_directory(&mut self, dir: PathBuf, scheduler: &Scheduler) {
         // Check early if we should skip this request
@@ -332,46 +298,9 @@ impl BuckProject {
         self.active_load_tasks.insert(dir, task_id);
     }
 
-    pub fn request_target_details(
-        &mut self,
-        dir_path: PathBuf,
-        target_index: usize,
-        scheduler: &Scheduler,
-    ) {
-        let dir = self.directories.get(&dir_path).unwrap();
-        if target_index >= dir.targets.len() {
-            return;
-        }
 
-        let target = &dir.targets[target_index];
-        if target.details_loaded {
-            return; // Already loaded
-        }
-
-        let task_key = (dir_path.clone(), target_index);
-
-        // Cancel previous detail request if any
-        if let Some(task_id) = self.active_detail_tasks.remove(&task_key) {
-            scheduler.cancel(task_id);
-        }
-
-        let target_label = target.name.clone();
-
-        // Create and dispatch new task
-        let task = Self::create_target_detail_loading_task(
-            dir_path.clone(),
-            target_index,
-            target_label,
-            self.target_detail_results.clone(),
-        );
-        let task_id = task.id;
-
-        scheduler.dispatch_micro(task);
-        self.active_detail_tasks.insert(task_key, task_id);
-    }
-
-    // Update the targets and target details data model, would be rendered in ui
-    pub async fn update_loaded_target_results(&mut self, scheduler: &Scheduler) {
+    // Update the targets data model, would be rendered in ui
+    pub async fn update_loaded_target_results(&mut self, _scheduler: &Scheduler) {
         // Process target list results
         let target_results_to_process = {
             let mut results = self.target_results.lock().await;
@@ -417,45 +346,6 @@ impl BuckProject {
             // Update filtered targets if this is the selected directory
             if current_selected_dir {
                 self.update_filtered_targets();
-                // Trigger detail loading for the first target (which is now selected)
-                if !self.filtered_targets.is_empty() {
-                    self.request_target_details_for_selected(scheduler);
-                }
-            }
-        }
-
-        // Process target detail results
-        let detail_results_to_process = {
-            let mut results = self.target_detail_results.lock().await;
-            std::mem::take(&mut *results)
-        };
-
-        for (dir_path, target_index, result) in detail_results_to_process {
-            let dir = self.directories.get_mut(&dir_path).unwrap();
-            if target_index < dir.targets.len() {
-                let target = &mut dir.targets[target_index];
-
-                // Clear active detail task if this is the one that was loading
-                self.active_detail_tasks
-                    .remove(&(dir_path.clone(), target_index));
-
-                match result {
-                    Ok(details) => {
-                        target.rule_type = details.rule_type;
-                        target.deps = details.deps;
-                        target.details_loaded = true;
-                    }
-                    Err(_) => {
-                        // Mark as loaded even on error to avoid retrying
-                        target.rule_type = "error".to_string();
-                        target.details_loaded = true;
-                    }
-                }
-
-                // Update filtered targets if this affects the currently displayed targets
-                if dir_path == self.selected_directory {
-                    self.update_filtered_targets_with_reset(false);
-                }
             }
         }
     }
@@ -498,54 +388,88 @@ impl BuckProject {
     fn parse_buck2_targets_output_static(output: &str, dir_path: &Path) -> Result<Vec<BuckTarget>> {
         let mut targets = Vec::new();
 
-        for line in output.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
+        // Try to parse as JSON first (for -A output)
+        if let Ok(json_array) = serde_json::from_str::<Vec<serde_json::Value>>(output) {
+            for json in json_array {
+                let name = json.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
 
-            // Only store basic info initially, defer detailed query until target is selected
-            targets.push(BuckTarget {
-                name: line.to_string(),
-                rule_type: "unknown".to_string(), // Will be loaded on demand
-                path: dir_path.to_path_buf(),
-                deps: Vec::new(), // Will be loaded on demand
-                details_loaded: false,
-            });
+                let rule_type = json.get("buck.type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                let deps = json.get("buck.deps")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let package = json.get("buck.package")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let oncall = json.get("buck.oncall")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let visibility = json.get("visibility")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let default_target_platform = json.get("default_target_platform")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                targets.push(BuckTarget {
+                    name,
+                    rule_type,
+                    path: dir_path.to_path_buf(),
+                    deps,
+                    details_loaded: true, // We have all the details from -A
+                    package,
+                    oncall,
+                    visibility,
+                    default_target_platform,
+                });
+            }
+        } else {
+            // Fallback to line-by-line parsing for legacy output
+            for line in output.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+
+                targets.push(BuckTarget {
+                    name: line.to_string(),
+                    rule_type: "unknown".to_string(),
+                    path: dir_path.to_path_buf(),
+                    deps: Vec::new(),
+                    details_loaded: false,
+                    package: None,
+                    oncall: None,
+                    visibility: Vec::new(),
+                    default_target_platform: None,
+                });
+            }
         }
 
         Ok(targets)
     }
 
-    fn parse_target_query_output_static(output: &str, target_label: &str) -> Result<TargetDetails> {
-        // Parse JSON output from buck2 query
-        match serde_json::from_str::<serde_json::Value>(output) {
-            Ok(json) => match json.get(target_label) {
-                Some(json) => {
-                    let rule_type = json
-                        .get("buck.type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-
-                    let deps = json
-                        .get("buck.deps")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str())
-                                .map(|s| s.to_string())
-                                .collect()
-                        })
-                        .unwrap_or_else(Vec::new);
-
-                    Ok(TargetDetails { rule_type, deps })
-                }
-                None => Err(anyhow!("Target not found: {}", target_label)),
-            },
-            Err(_) => Err(anyhow!("Failed to parse target query output")),
-        }
-    }
 
     pub fn update_filtered_targets(&mut self) {
         self.update_filtered_targets_with_reset(true);
@@ -647,23 +571,19 @@ impl BuckProject {
         self.filtered_targets.get(self.selected_target)
     }
 
-    pub fn next_target(&mut self, scheduler: &Scheduler) {
+    pub fn next_target(&mut self, _scheduler: &Scheduler) {
         if !self.filtered_targets.is_empty() {
             self.selected_target = (self.selected_target + 1) % self.filtered_targets.len();
-            // Request target details for the newly selected target
-            self.request_target_details_for_selected(scheduler);
         }
     }
 
-    pub fn prev_target(&mut self, scheduler: &Scheduler) {
+    pub fn prev_target(&mut self, _scheduler: &Scheduler) {
         if !self.filtered_targets.is_empty() {
             self.selected_target = if self.selected_target > 0 {
                 self.selected_target - 1
             } else {
                 self.filtered_targets.len() - 1
             };
-            // Request target details for the newly selected target
-            self.request_target_details_for_selected(scheduler);
         }
     }
 
@@ -672,23 +592,6 @@ impl BuckProject {
         self.update_filtered_targets();
     }
 
-    fn request_target_details_for_selected(&mut self, scheduler: &Scheduler) {
-        if let Some(selected_target) = self.get_selected_target() {
-            // Find the actual index of the selected target in the directory's target list
-            if let Some(selected_dir) = self.get_selected_directory()
-                && let Some(actual_target_index) = selected_dir
-                    .targets
-                    .iter()
-                    .position(|t| t.name == selected_target.name && t.path == selected_target.path)
-            {
-                self.request_target_details(
-                    self.selected_directory.clone(),
-                    actual_target_index,
-                    scheduler,
-                );
-            }
-        }
-    }
 
     pub fn get_parent_directories(&self) -> Vec<BuckDirectory> {
         if let Some(parent) = self.current_path.parent()
