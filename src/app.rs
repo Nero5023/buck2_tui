@@ -43,7 +43,8 @@ impl App {
     }
 
     pub async fn initialize(&mut self) {
-        self.project.update_targets_for_selected_directory(&self.scheduler);
+        self.project
+            .update_targets_for_selected_directory(&self.scheduler);
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -55,7 +56,9 @@ impl App {
 
         while !self.should_quit {
             // Check for completed target loading results
-            self.project.update_loaded_target_results(&self.scheduler).await;
+            self.project
+                .update_loaded_target_results(&self.scheduler)
+                .await;
 
             terminal.draw(|f| {
                 self.ui.draw(f, &self.project);
@@ -94,4 +97,3 @@ impl App {
         Ok(())
     }
 }
-

@@ -109,7 +109,10 @@ impl EventHandler {
                     PaneGroup::Explorer => {
                         // In explorer mode, 'l' enters selected directory, keeps focus on current dir pane
                         if project.selected_directory != project.current_path {
-                            project.navigate_to_directory(project.selected_directory.clone(), scheduler);
+                            project.navigate_to_directory(
+                                project.selected_directory.clone(),
+                                scheduler,
+                            );
                         }
                         // Always keep focus on current directory pane
                         ui.current_pane = Pane::CurrentDirectory;
@@ -172,7 +175,10 @@ impl EventHandler {
                     Pane::CurrentDirectory => {
                         // Navigate into selected directory or switch to inspector
                         if project.selected_directory != project.current_path {
-                            project.navigate_to_directory(project.selected_directory.clone(), scheduler);
+                            project.navigate_to_directory(
+                                project.selected_directory.clone(),
+                                scheduler,
+                            );
                         } else {
                             // If current directory is selected, switch to inspector
                             ui.current_group = PaneGroup::Inspector;

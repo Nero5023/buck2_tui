@@ -40,10 +40,10 @@ async fn main() -> Result<()> {
     let project_path = args.path.unwrap_or_else(|| ".".to_string());
 
     let mut app = App::new(project_path).await?;
-    
+
     // Request targets for the initial current directory if it has Buck files
     app.initialize().await;
-    
+
     app.run().await?;
 
     Ok(())
