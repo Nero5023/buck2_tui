@@ -168,9 +168,9 @@ impl UI {
                 } else if dir.targets_loading {
                     "loading...".to_string()
                 } else if dir.has_buck_file {
-                    "—".to_string()  // Not loaded yet but has Buck files
+                    "—".to_string() // Not loaded yet but has Buck files
                 } else {
-                    "—".to_string()  // Not loaded and no Buck files
+                    "—".to_string() // Not loaded and no Buck files
                 };
                 let buck_indicator = if dir.has_buck_file { "📦" } else { "📁" };
                 let text = format!("{} {} ({})", buck_indicator, display_path, target_count);
@@ -239,11 +239,11 @@ impl UI {
                 } else if dir.targets_loading {
                     "loading...".to_string()
                 } else if dir.has_buck_file {
-                    "—".to_string()  // Not loaded yet but has Buck files
+                    "—".to_string() // Not loaded yet but has Buck files
                 } else {
-                    "—".to_string()  // Not loaded and no Buck files
+                    "—".to_string() // Not loaded and no Buck files
                 };
-                
+
                 let buck_indicator = if dir.has_buck_file { "📦" } else { "📁" };
                 let text = format!("{} {} ({})", buck_indicator, display_path, target_count);
 
@@ -257,20 +257,10 @@ impl UI {
             Style::default()
         };
 
-        let title = format!(
-            "Selected: {}",
-            project
-                .selected_directory
-                .file_name()
-                .map(|n| n.to_string_lossy())
-                .unwrap_or_else(|| ".".into())
-        );
-
         let directories_list = List::new(directories)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(title)
                     .border_style(block_style),
             )
             .highlight_style(Style::default().add_modifier(Modifier::BOLD));
@@ -581,7 +571,7 @@ impl UI {
     fn draw_path_bar(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
         // Convert path to a more readable format, similar to yazi
         let current_path = &project.current_path;
-        
+
         // Try to make path relative to home directory for cleaner display
         let display_path = if let Some(home) = dirs::home_dir() {
             if let Ok(relative) = current_path.strip_prefix(&home) {
@@ -593,9 +583,10 @@ impl UI {
             current_path.display().to_string()
         };
 
-        let path_text = vec![Line::from(vec![
-            Span::styled(display_path, Style::default().fg(Color::Yellow)),
-        ])];
+        let path_text = vec![Line::from(vec![Span::styled(
+            display_path,
+            Style::default().fg(Color::Yellow),
+        )])];
 
         let path_bar = Paragraph::new(path_text);
 
