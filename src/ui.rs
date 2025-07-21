@@ -589,4 +589,35 @@ impl UI {
 
         f.render_widget(path_bar, area);
     }
+
+    pub fn draw_actions_popup(&self, f: &mut Frame, selected_action: usize) {
+        let popup_area = self.centered_rect(30, 40, f.area());
+        f.render_widget(Clear, popup_area);
+
+        let actions = vec!["Build", "Test"];
+        
+        let action_items: Vec<ListItem> = actions
+            .iter()
+            .enumerate()
+            .map(|(i, action)| {
+                let style = if i == selected_action {
+                    Style::default().bg(Color::Blue).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(*action).style(style)
+            })
+            .collect();
+
+        let actions_list = List::new(action_items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Actions")
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+
+        f.render_widget(actions_list, popup_area);
+    }
 }

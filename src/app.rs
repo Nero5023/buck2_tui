@@ -20,6 +20,8 @@ pub struct App {
     event_handler: EventHandler,
     scheduler: Scheduler,
     should_quit: bool,
+    show_actions: bool,
+    selected_action: usize,
 }
 
 impl App {
@@ -35,6 +37,8 @@ impl App {
             event_handler,
             scheduler,
             should_quit: false,
+            show_actions: false,
+            selected_action: 0,
         })
     }
 
@@ -62,6 +66,10 @@ impl App {
 
             terminal.draw(|f| {
                 self.ui.draw(f, &self.project);
+                
+                if self.show_actions {
+                    self.ui.draw_actions_popup(f, self.selected_action);
+                }
             })?;
 
             if event::poll(Duration::from_millis(100))? {
@@ -88,7 +96,7 @@ impl App {
                 }
                 _ => {
                     self.event_handler
-                        .handle_key_event(key, &mut self.project, &mut self.ui, &self.scheduler)
+                        .handle_key_event(key, &mut self.project, &mut self.ui, &self.scheduler, &mut self.show_actions, &mut self.selected_action)
                         .await?;
                 }
             },

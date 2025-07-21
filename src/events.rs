@@ -19,11 +19,15 @@ impl EventHandler {
         project: &mut BuckProject,
         ui: &mut UI,
         scheduler: &Scheduler,
+        show_actions: &mut bool,
+        selected_action: &mut usize,
     ) -> Result<()> {
-        if ui.search_mode {
+        if *show_actions {
+            self.handle_actions_mode(key, project, ui, scheduler, show_actions, selected_action).await?;
+        } else if ui.search_mode {
             self.handle_search_mode(key, project, ui).await?;
         } else {
-            self.handle_normal_mode(key, project, ui, scheduler).await?;
+            self.handle_normal_mode(key, project, ui, scheduler, show_actions, selected_action).await?;
         }
         Ok(())
     }
@@ -63,10 +67,18 @@ impl EventHandler {
         project: &mut BuckProject,
         ui: &mut UI,
         scheduler: &Scheduler,
+        show_actions: &mut bool,
+        selected_action: &mut usize,
     ) -> Result<()> {
         match key.code {
             KeyCode::Char('/') => {
                 ui.search_mode = true;
+            }
+            KeyCode::Char('a') => {
+                if ui.current_pane == Pane::Targets && project.get_selected_target().is_some() {
+                    *show_actions = true;
+                    *selected_action = 0;
+                }
             }
             KeyCode::Tab => {
                 // Switch between Explorer and Inspector groups
@@ -202,6 +214,51 @@ impl EventHandler {
                     }
                     Pane::Details => {}
                 }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn handle_actions_mode(
+        &mut self,
+        key: KeyEvent,
+        project: &mut BuckProject,
+        _ui: &mut UI,
+        _scheduler: &Scheduler,
+        show_actions: &mut bool,
+        selected_action: &mut usize,
+    ) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                *show_actions = false;
+                *selected_action = 0;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                let action_count = 2; // build, test
+                *selected_action = (*selected_action + 1) % action_count;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let action_count = 2; // build, test
+                *selected_action = (*selected_action + action_count - 1) % action_count;
+            }
+            KeyCode::Enter => {
+                if let Some(target) = project.get_selected_target() {
+                    let target_name = &target.full_target_label_name;
+                    match *selected_action {
+                        0 => {
+                            debug!("Building target: {}", target_name);
+                            // TODO: Execute build command via scheduler
+                        }
+                        1 => {
+                            debug!("Testing target: {}", target_name);
+                            // TODO: Execute test command via scheduler
+                        }
+                        _ => {}
+                    }
+                }
+                *show_actions = false;
+                *selected_action = 0;
             }
             _ => {}
         }
