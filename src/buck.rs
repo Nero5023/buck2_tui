@@ -721,28 +721,59 @@ impl BuckProject {
                 if let Some((file_path, line_number)) = Self::parse_uquery_stack_output(&output) {
                     debug!("Extracted: path={}, line={}", file_path, line_number);
 
-                    // Open the fb-vscode URI
-                    let uri = format!(
-                        "fb-vscode://nuclide.core/open-arc?project=fbsource&path={}&line={}",
-                        file_path, line_number
-                    );
-                    debug!("Opening URI: {}", uri);
-
-                    // Use xdg-open on Linux, open on macOS, start on Windows
-                    let open_cmd = if cfg!(target_os = "linux") {
-                        "xdg-open"
-                    } else if cfg!(target_os = "macos") {
-                        "open"
-                    } else {
-                        "start"
+                    // Get hg root directory
+                    let hg_root = match std::process::Command::new("hg")
+                        .arg("root")
+                        .output()
+                    {
+                        Ok(output) => {
+                            String::from_utf8_lossy(&output.stdout)
+                                .trim()
+                                .to_string()
+                        }
+                        Err(e) => {
+                            debug!("Failed to get hg root: {}", e);
+                            return;
+                        }
                     };
 
-                    if let Err(e) = std::process::Command::new(open_cmd)
-                        .arg(&uri)
+                    debug!("hg root: {}", hg_root);
+
+                    // Open file in VS Code using `code -g file:line`
+                    let file_with_line = format!("{}:{}", file_path, line_number);
+                    debug!("Opening with VS Code: {}", file_with_line);
+
+                    if let Err(e) = std::process::Command::new("code")
+                        .arg("-g")
+                        .arg(&file_with_line)
+                        .current_dir(&hg_root)
                         .spawn()
                     {
-                        debug!("Failed to open URI: {}", e);
+                        debug!("Failed to open in VS Code: {}", e);
                     }
+
+                    // OLD IMPLEMENTATION: Open the fb-vscode URI
+                    // let uri = format!(
+                    //     "fb-vscode://nuclide.core/open-arc?project=fbsource&path={}&line={}",
+                    //     file_path, line_number
+                    // );
+                    // debug!("Opening URI: {}", uri);
+                    //
+                    // // Use xdg-open on Linux, open on macOS, start on Windows
+                    // let open_cmd = if cfg!(target_os = "linux") {
+                    //     "xdg-open"
+                    // } else if cfg!(target_os = "macos") {
+                    //     "open"
+                    // } else {
+                    //     "start"
+                    // };
+                    //
+                    // if let Err(e) = std::process::Command::new(open_cmd)
+                    //     .arg(&uri)
+                    //     .spawn()
+                    // {
+                    //     debug!("Failed to open URI: {}", e);
+                    // }
                 } else {
                     debug!("Failed to parse uquery output");
                 }
