@@ -21,8 +21,7 @@ struct Args {
     path: Option<String>,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn setup_logging() -> Result<tracing_appender::non_blocking::WorkerGuard> {
     // Get standard log directory following XDG Base Directory specification
     // Linux: ~/.local/state/buck-tui/
     // macOS: ~/Library/Application Support/buck-tui/
@@ -38,7 +37,7 @@ async fn main() -> Result<()> {
 
     // Set up file logging with daily rotation
     let file_appender = tracing_appender::rolling::daily(&log_dir, "buck-tui.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     tracing_subscriber::registry()
         .with(
@@ -48,6 +47,13 @@ async fn main() -> Result<()> {
 
     info!("Starting buck-tui");
     info!("Log directory: {:?}", log_dir);
+
+    Ok(guard)
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let _guard = setup_logging()?;
 
     let args = Args::parse();
     let project_path = args.path.unwrap_or_else(|| ".".to_string());
