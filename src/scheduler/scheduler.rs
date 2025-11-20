@@ -1,13 +1,18 @@
-use async_priority_channel::{Receiver, Sender, unbounded};
+use async_priority_channel::Receiver;
+use async_priority_channel::Sender;
+use async_priority_channel::unbounded;
 use futures::FutureExt;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, BufReader};
+use tokio::io::AsyncReadExt;
+use tokio::io::BufReader;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::task::{Priority, Task, TaskId};
+use super::task::Priority;
+use super::task::Task;
+use super::task::TaskId;
 
 #[derive(Debug)]
 pub struct Ongoing {

@@ -1,15 +1,21 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+use anyhow::anyhow;
 use futures::FutureExt;
 use nerd_font_symbols::dev as dev_symbols;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use crate::scheduler::{Priority, Scheduler, Task, TaskId};
+use crate::scheduler::Priority;
+use crate::scheduler::Scheduler;
+use crate::scheduler::Task;
+use crate::scheduler::TaskId;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuckTarget {
@@ -288,7 +294,11 @@ impl BuckProject {
 
         // Convert to absolute path for consistent navigation
         let root_path = initial_path.canonicalize().map_err(|e| {
-            anyhow!("Failed to canonicalize path {}: {}", initial_path.display(), e)
+            anyhow!(
+                "Failed to canonicalize path {}: {}",
+                initial_path.display(),
+                e
+            )
         })?;
 
         let current_path = root_path.clone();
@@ -644,7 +654,7 @@ impl BuckProject {
     pub fn navigate_to_directory(&mut self, dir_path: PathBuf, scheduler: &Scheduler) {
         // Convert to absolute path for consistent navigation
         let absolute_path = dir_path.canonicalize().unwrap_or(dir_path);
-        
+
         self.current_path = absolute_path.clone();
         self.selected_directory = absolute_path;
         self.selected_target = 0;

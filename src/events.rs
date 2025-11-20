@@ -1,9 +1,12 @@
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
 
 use crate::buck::BuckProject;
 use crate::scheduler::Scheduler;
-use crate::ui::{Pane, PaneGroup, UI};
+use crate::ui::Pane;
+use crate::ui::PaneGroup;
+use crate::ui::UI;
 use tracing::debug;
 
 pub struct EventHandler;
@@ -23,11 +26,13 @@ impl EventHandler {
         selected_action: &mut usize,
     ) -> Result<()> {
         if *show_actions {
-            self.handle_actions_mode(key, project, ui, scheduler, show_actions, selected_action).await?;
+            self.handle_actions_mode(key, project, ui, scheduler, show_actions, selected_action)
+                .await?;
         } else if ui.search_mode {
             self.handle_search_mode(key, project, ui).await?;
         } else {
-            self.handle_normal_mode(key, project, ui, scheduler, show_actions, selected_action).await?;
+            self.handle_normal_mode(key, project, ui, scheduler, show_actions, selected_action)
+                .await?;
         }
         Ok(())
     }

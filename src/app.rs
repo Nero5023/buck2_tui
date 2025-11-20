@@ -1,9 +1,13 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::Event;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyModifiers;
+use crossterm::event::{self};
 use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
+use crossterm::terminal::EnterAlternateScreen;
+use crossterm::terminal::LeaveAlternateScreen;
+use crossterm::terminal::disable_raw_mode;
+use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io;
@@ -66,7 +70,7 @@ impl App {
 
             terminal.draw(|f| {
                 self.ui.draw(f, &self.project);
-                
+
                 if self.show_actions {
                     self.ui.draw_actions_popup(f, self.selected_action);
                 }
@@ -96,7 +100,14 @@ impl App {
                 }
                 _ => {
                     self.event_handler
-                        .handle_key_event(key, &mut self.project, &mut self.ui, &self.scheduler, &mut self.show_actions, &mut self.selected_action)
+                        .handle_key_event(
+                            key,
+                            &mut self.project,
+                            &mut self.ui,
+                            &self.scheduler,
+                            &mut self.show_actions,
+                            &mut self.selected_action,
+                        )
                         .await?;
                 }
             },

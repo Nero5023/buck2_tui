@@ -1,12 +1,23 @@
-use ratatui::{
-    Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
-};
+use ratatui::Frame;
+use ratatui::layout::Constraint;
+use ratatui::layout::Direction;
+use ratatui::layout::Layout;
+use ratatui::layout::Rect;
+use ratatui::style::Color;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
+use ratatui::widgets::Clear;
+use ratatui::widgets::List;
+use ratatui::widgets::ListItem;
+use ratatui::widgets::Paragraph;
+use ratatui::widgets::Wrap;
 
-use crate::buck::{BuckProject, BuckTarget};
+use crate::buck::BuckProject;
+use crate::buck::BuckTarget;
 
 pub struct UI {
     pub search_mode: bool,
@@ -595,7 +606,7 @@ impl UI {
         f.render_widget(Clear, popup_area);
 
         let actions = vec!["Build", "Test"];
-        
+
         let action_items: Vec<ListItem> = actions
             .iter()
             .enumerate()
