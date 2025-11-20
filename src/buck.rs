@@ -11,6 +11,7 @@ use std::process::Command;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
+use tracing::warn;
 
 use crate::scheduler::Priority;
 use crate::scheduler::Scheduler;
@@ -705,7 +706,7 @@ impl BuckProject {
 
     pub fn open_target_definition(&self, scheduler: &Scheduler) {
         let Some(target) = self.get_selected_target() else {
-            debug!("No target selected");
+            warn!("No target selected for opening definition");
             return;
         };
 
@@ -732,7 +733,7 @@ impl BuckProject {
                                 .to_string()
                         }
                         Err(e) => {
-                            debug!("Failed to get hg root: {}", e);
+                            warn!("Failed to get hg root: {}", e);
                             return;
                         }
                     };
@@ -749,7 +750,7 @@ impl BuckProject {
                         .current_dir(&hg_root)
                         .spawn()
                     {
-                        debug!("Failed to open in VS Code: {}", e);
+                        warn!("Failed to open in VS Code: {}", e);
                     }
 
                     // OLD IMPLEMENTATION: Open the fb-vscode URI
@@ -772,10 +773,10 @@ impl BuckProject {
                     //     .arg(&uri)
                     //     .spawn()
                     // {
-                    //     debug!("Failed to open URI: {}", e);
+                    //     warn!("Failed to open URI: {}", e);
                     // }
                 } else {
-                    debug!("Failed to parse uquery output");
+                    warn!("Failed to parse uquery output");
                 }
             }
             .boxed()
