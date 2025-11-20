@@ -13,6 +13,7 @@ use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
+use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 
@@ -23,6 +24,10 @@ pub struct UI {
     pub search_mode: bool,
     pub current_pane: Pane,
     pub current_group: PaneGroup,
+    parent_list_state: ListState,
+    current_list_state: ListState,
+    targets_list_state: ListState,
+    actions_list_state: ListState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -46,10 +51,14 @@ impl UI {
             search_mode: false,
             current_pane: Pane::CurrentDirectory,
             current_group: PaneGroup::Explorer,
+            parent_list_state: ListState::default(),
+            current_list_state: ListState::default(),
+            targets_list_state: ListState::default(),
+            actions_list_state: ListState::default(),
         }
     }
 
-    pub fn draw(&self, f: &mut Frame, project: &BuckProject) {
+    pub fn draw(&mut self, f: &mut Frame, project: &BuckProject) {
         // Split main area into top path bar and main content
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -93,12 +102,13 @@ impl UI {
         }
     }
 
-    fn draw_parent_directory(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
+    fn draw_parent_directory(&mut self, f: &mut Frame, area: Rect, project: &BuckProject) {
         let parent_dirs = project.get_parent_directories();
 
         let directories: Vec<ListItem> = parent_dirs
             .iter()
-            .map(|dir| {
+            .enumerate()
+            .map(|(idx, dir)| {
                 let is_current = dir.path == project.current_path;
                 let style = if is_current {
                     Style::default().bg(Color::Blue).fg(Color::White)
@@ -114,6 +124,11 @@ impl UI {
 
                 let buck_indicator = if dir.has_buck_file { "📦" } else { "📁" };
                 let text = format!("{} {}", buck_indicator, display_path);
+
+                // Update list state to select current directory
+                if is_current {
+                    self.parent_list_state.select(Some(idx));
+                }
 
                 ListItem::new(text).style(style)
             })
@@ -144,17 +159,19 @@ impl UI {
             )
             .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
-        f.render_widget(directories_list, area);
+        f.render_stateful_widget(directories_list, area, &mut self.parent_list_state);
     }
 
-    fn draw_current_directory(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
+    fn draw_current_directory(&mut self, f: &mut Frame, area: Rect, project: &BuckProject) {
         let current_dirs = project.get_current_directories();
 
         let directories: Vec<ListItem> = current_dirs
             .sub_directories
             .iter()
-            .map(|dir| {
-                let style = if dir.path == project.selected_directory {
+            .enumerate()
+            .map(|(idx, dir)| {
+                let is_selected = dir.path == project.selected_directory;
+                let style = if is_selected {
                     Style::default().bg(Color::Blue).fg(Color::White)
                 } else {
                     Style::default()
@@ -186,6 +203,11 @@ impl UI {
                 let buck_indicator = if dir.has_buck_file { "📦" } else { "📁" };
                 let text = format!("{} {} ({})", buck_indicator, display_path, target_count);
 
+                // Update list state to select the selected directory
+                if is_selected {
+                    self.current_list_state.select(Some(idx));
+                }
+
                 ListItem::new(text).style(style)
             })
             .collect();
@@ -214,7 +236,7 @@ impl UI {
             )
             .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
-        f.render_widget(directories_list, area);
+        f.render_stateful_widget(directories_list, area, &mut self.current_list_state);
     }
 
     fn draw_selected_directory(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
@@ -276,7 +298,7 @@ impl UI {
         f.render_widget(directories_list, area);
     }
 
-    fn draw_targets(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
+    fn draw_targets(&mut self, f: &mut Frame, area: Rect, project: &BuckProject) {
         let targets: Vec<ListItem> = if let Some(selected_dir) = project.get_selected_directory() {
             if selected_dir.targets_loading {
                 vec![ListItem::new("Loading targets...").style(Style::default().fg(Color::Yellow))]
@@ -313,6 +335,9 @@ impl UI {
             vec![]
         };
 
+        // Update list state to track selected target
+        self.targets_list_state.select(Some(project.selected_target));
+
         let block_style = if self.current_pane == Pane::Targets {
             Style::default().fg(Color::Yellow)
         } else {
@@ -343,7 +368,7 @@ impl UI {
             )
             .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
-        f.render_widget(targets_list, area);
+        f.render_stateful_widget(targets_list, area, &mut self.targets_list_state);
     }
 
     fn draw_details(&self, f: &mut Frame, area: Rect, project: &BuckProject) {
@@ -601,7 +626,7 @@ impl UI {
         f.render_widget(path_bar, area);
     }
 
-    pub fn draw_actions_popup(&self, f: &mut Frame, selected_action: usize) {
+    pub fn draw_actions_popup(&mut self, f: &mut Frame, selected_action: usize) {
         let popup_area = self.centered_rect(30, 40, f.area());
         f.render_widget(Clear, popup_area);
 
@@ -620,6 +645,9 @@ impl UI {
             })
             .collect();
 
+        // Update list state for selected action
+        self.actions_list_state.select(Some(selected_action));
+
         let actions_list = List::new(action_items)
             .block(
                 Block::default()
@@ -629,6 +657,6 @@ impl UI {
             )
             .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
-        f.render_widget(actions_list, popup_area);
+        f.render_stateful_widget(actions_list, popup_area, &mut self.actions_list_state);
     }
 }
