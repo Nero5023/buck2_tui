@@ -1,15 +1,16 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::fmt;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 mod app;
 mod buck;
 mod events;
 mod scheduler;
 mod ui;
-use tracing::info;
-
 use app::App;
+use tracing::info;
 
 #[derive(Parser)]
 #[command(name = "buck-tui")]
@@ -21,11 +22,21 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Create logs directory if it doesn't exist
-    std::fs::create_dir_all("logs")?;
+    // Get standard log directory following XDG Base Directory specification
+    // Linux: ~/.local/state/buck-tui/
+    // macOS: ~/Library/Application Support/buck-tui/
+    // Windows: C:\Users\<user>\AppData\Local\buck-tui\
+    let log_dir = dirs::state_dir()
+        .or_else(|| dirs::data_local_dir())
+        .context("Failed to determine log directory")?
+        .join("buck-tui");
 
-    // Set up file logging
-    let file_appender = tracing_appender::rolling::daily("logs", "buck-tui.log");
+    // Create log directory if it doesn't exist
+    std::fs::create_dir_all(&log_dir)
+        .with_context(|| format!("Failed to create log directory: {:?}", log_dir))?;
+
+    // Set up file logging with daily rotation
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "buck-tui.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     tracing_subscriber::registry()
@@ -35,6 +46,7 @@ async fn main() -> Result<()> {
         .init();
 
     info!("Starting buck-tui");
+    info!("Log directory: {:?}", log_dir);
 
     let args = Args::parse();
     let project_path = args.path.unwrap_or_else(|| ".".to_string());
