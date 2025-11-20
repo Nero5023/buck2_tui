@@ -273,7 +273,6 @@ pub struct BuckProject {
     pub directories: HashMap<PathBuf, BuckDirectory>,
     pub selected_directory: PathBuf,
     pub selected_target: usize,
-    pub search_query: String,
     pub filtered_targets: Vec<BuckTarget>,
     pub cells: HashMap<String, PathBuf>,
 
@@ -311,7 +310,6 @@ impl BuckProject {
             directories: HashMap::new(),
             selected_directory,
             selected_target: 0,
-            search_query: String::new(),
             filtered_targets: Vec::new(),
             cells: HashMap::new(),
             target_results: Arc::new(Mutex::new(Vec::new())),
@@ -505,34 +503,14 @@ impl BuckProject {
     }
 
     fn update_filtered_targets_with_reset(&mut self, reset_selection: bool) {
-        // Get targets from the currently selected directory
-        let selected_dir_targets = if let Some(selected_dir) = self.get_selected_directory() {
+        // Get all targets from the currently selected directory (no filtering)
+        self.filtered_targets = if let Some(selected_dir) = self.get_selected_directory() {
             selected_dir.targets.clone()
         } else {
             Vec::new()
         };
 
-        if self.search_query.is_empty() {
-            self.filtered_targets = selected_dir_targets;
-        } else {
-            // TODO: maybe use fzf to filter targets
-            self.filtered_targets = selected_dir_targets
-                .iter()
-                .filter(|target| {
-                    target
-                        .display_title()
-                        .to_lowercase()
-                        .contains(&self.search_query.to_lowercase())
-                        || target
-                            .rule_type
-                            .to_lowercase()
-                            .contains(&self.search_query.to_lowercase())
-                })
-                .cloned()
-                .collect();
-        }
-
-        // Only reset selected target when explicitly requested (directory/search changes)
+        // Only reset selected target when explicitly requested (directory changes)
         if reset_selection {
             self.selected_target = 0;
         } else {
@@ -614,11 +592,6 @@ impl BuckProject {
                 self.filtered_targets.len() - 1
             };
         }
-    }
-
-    pub fn set_search_query(&mut self, query: String) {
-        self.search_query = query;
-        self.update_filtered_targets();
     }
 
     pub fn get_parent_directories(&self) -> Vec<BuckDirectory> {

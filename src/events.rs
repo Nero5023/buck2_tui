@@ -2,6 +2,7 @@ use anyhow::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 
+use crate::app::SearchState;
 use crate::buck::BuckProject;
 use crate::scheduler::Scheduler;
 use crate::ui::Pane;
@@ -22,16 +23,17 @@ impl EventHandler {
         project: &mut BuckProject,
         ui: &mut UI,
         scheduler: &Scheduler,
+        search_state: &mut SearchState,
         show_actions: &mut bool,
         selected_action: &mut usize,
     ) -> Result<()> {
         if *show_actions {
             self.handle_actions_mode(key, project, ui, scheduler, show_actions, selected_action)
                 .await?;
-        } else if ui.search_mode {
-            self.handle_search_mode(key, project, ui).await?;
+        } else if search_state.active {
+            self.handle_search_mode(key, project, ui, search_state, scheduler).await?;
         } else {
-            self.handle_normal_mode(key, project, ui, scheduler, show_actions, selected_action)
+            self.handle_normal_mode(key, project, ui, scheduler, search_state, show_actions, selected_action)
                 .await?;
         }
         Ok(())
@@ -42,28 +44,211 @@ impl EventHandler {
         key: KeyEvent,
         project: &mut BuckProject,
         ui: &mut UI,
+        search_state: &mut SearchState,
+        scheduler: &Scheduler,
     ) -> Result<()> {
         match key.code {
             KeyCode::Esc => {
-                ui.search_mode = false;
-                project.set_search_query(String::new());
+                search_state.reset();
             }
             KeyCode::Enter => {
-                ui.search_mode = false;
+                // Just exit search mode without resetting (keep highlights)
+                search_state.active = false;
             }
             KeyCode::Backspace => {
-                let mut query = project.search_query.clone();
-                query.pop();
-                project.set_search_query(query);
+                search_state.query.pop();
+                // Get current selection based on search pane
+                let current_selection = match search_state.searching_in_pane {
+                    crate::app::SearchPane::CurrentDirectory => {
+                        // Find current selected directory index
+                        let current_dirs = project.get_current_directories();
+                        current_dirs
+                            .sub_directories
+                            .iter()
+                            .position(|dir| dir.path == project.selected_directory)
+                            .unwrap_or(0)
+                    }
+                    crate::app::SearchPane::Targets => project.selected_target,
+                };
+                self.update_search_matches(project, ui, search_state, current_selection);
+                // Navigate to the matched item
+                if search_state.total_matches > 0 {
+                    self.navigate_to_current_match(project, ui, search_state, scheduler);
+                }
             }
             KeyCode::Char(c) => {
-                let mut query = project.search_query.clone();
-                query.push(c);
-                project.set_search_query(query);
+                search_state.query.push(c);
+                // Get current selection based on search pane
+                let current_selection = match search_state.searching_in_pane {
+                    crate::app::SearchPane::CurrentDirectory => {
+                        // Find current selected directory index
+                        let current_dirs = project.get_current_directories();
+                        current_dirs
+                            .sub_directories
+                            .iter()
+                            .position(|dir| dir.path == project.selected_directory)
+                            .unwrap_or(0)
+                    }
+                    crate::app::SearchPane::Targets => project.selected_target,
+                };
+                self.update_search_matches(project, ui, search_state, current_selection);
+                // Navigate to the matched item
+                if search_state.total_matches > 0 {
+                    self.navigate_to_current_match(project, ui, search_state, scheduler);
+                }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    fn update_search_matches(
+        &self,
+        project: &BuckProject,
+        ui: &UI,
+        search_state: &mut SearchState,
+        current_selection: usize,
+    ) {
+        if search_state.query.is_empty() {
+            search_state.matches.clear();
+            search_state.current_match_idx = 0;
+            search_state.total_matches = 0;
+            return;
+        }
+
+        let query_lower = search_state.query.to_lowercase();
+
+        // Find matches based on the pane we're searching in
+        search_state.matches = match search_state.searching_in_pane {
+            crate::app::SearchPane::CurrentDirectory => {
+                // Search in current directory list
+                let current_dirs = project.get_current_directories();
+                current_dirs
+                    .sub_directories
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, dir)| {
+                        let display_path = if dir.path == project.current_path {
+                            ".".to_string()
+                        } else {
+                            dir.path
+                                .file_name()
+                                .unwrap_or_else(|| dir.path.as_os_str())
+                                .to_string_lossy()
+                                .to_string()
+                        };
+                        if display_path.to_lowercase().contains(&query_lower) {
+                            Some(idx)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            }
+            crate::app::SearchPane::Targets => {
+                // Search in targets list
+                project
+                    .filtered_targets
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, target)| {
+                        if target.display_title().to_lowercase().contains(&query_lower) {
+                            Some(idx)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            }
+        };
+
+        search_state.total_matches = search_state.matches.len();
+
+        if search_state.total_matches == 0 {
+            search_state.current_match_idx = 0;
+            return;
+        }
+
+        // Find the closest match from current position
+        // First check if current item matches
+        if search_state.matches.contains(&current_selection) {
+            // Current item matches, use it
+            search_state.current_match_idx = search_state
+                .matches
+                .iter()
+                .position(|&idx| idx == current_selection)
+                .unwrap_or(0);
+        } else {
+            // Find the next match after current position
+            let next_match = search_state
+                .matches
+                .iter()
+                .position(|&idx| idx > current_selection);
+
+            if let Some(pos) = next_match {
+                search_state.current_match_idx = pos;
+            } else {
+                // No match after current position, wrap to first match
+                search_state.current_match_idx = 0;
+            }
+        }
+    }
+
+    fn navigate_to_current_match(
+        &self,
+        project: &mut BuckProject,
+        ui: &mut UI,
+        search_state: &SearchState,
+        scheduler: &Scheduler,
+    ) {
+        if search_state.matches.is_empty() {
+            return;
+        }
+
+        let current_match_idx = search_state.matches[search_state.current_match_idx];
+
+        match search_state.searching_in_pane {
+            crate::app::SearchPane::CurrentDirectory => {
+                // Navigate to the matched directory
+                let current_dirs = project.get_current_directories();
+                if let Some(dir) = current_dirs.sub_directories.get(current_match_idx) {
+                    project.selected_directory = dir.path.clone();
+                    project.update_targets_for_selected_directory(scheduler);
+                }
+            }
+            crate::app::SearchPane::Targets => {
+                // Navigate to the matched target
+                project.selected_target = current_match_idx;
+            }
+        }
+    }
+
+    /// Refresh search matches when directory/target list changes
+    fn refresh_search_if_active(
+        &self,
+        project: &BuckProject,
+        ui: &UI,
+        search_state: &mut SearchState,
+    ) {
+        // Only refresh if there's an active search query
+        if search_state.query.is_empty() {
+            return;
+        }
+
+        let current_selection = match search_state.searching_in_pane {
+            crate::app::SearchPane::CurrentDirectory => {
+                // Find current selected directory index
+                let current_dirs = project.get_current_directories();
+                current_dirs
+                    .sub_directories
+                    .iter()
+                    .position(|dir| dir.path == project.selected_directory)
+                    .unwrap_or(0)
+            }
+            crate::app::SearchPane::Targets => project.selected_target,
+        };
+
+        self.update_search_matches(project, ui, search_state, current_selection);
     }
 
     async fn handle_normal_mode(
@@ -72,12 +257,43 @@ impl EventHandler {
         project: &mut BuckProject,
         ui: &mut UI,
         scheduler: &Scheduler,
+        search_state: &mut SearchState,
         show_actions: &mut bool,
         selected_action: &mut usize,
     ) -> Result<()> {
         match key.code {
             KeyCode::Char('/') => {
-                ui.search_mode = true;
+                // Get current selection based on current pane
+                let current_selection = match ui.current_pane {
+                    Pane::CurrentDirectory | Pane::ParentDirectory | Pane::SelectedDirectory => {
+                        // Find current selected directory index
+                        let current_dirs = project.get_current_directories();
+                        current_dirs
+                            .sub_directories
+                            .iter()
+                            .position(|dir| dir.path == project.selected_directory)
+                            .unwrap_or(0)
+                    }
+                    Pane::Targets | Pane::Details => project.selected_target,
+                };
+                search_state.activate(ui.current_pane, current_selection);
+
+                // If there's a previous query, recalculate matches for the current pane
+                if !search_state.query.is_empty() {
+                    self.update_search_matches(project, ui, search_state, current_selection);
+                    // Navigate to the matched item
+                    if search_state.total_matches > 0 {
+                        self.navigate_to_current_match(project, ui, search_state, scheduler);
+                    }
+                }
+            }
+            KeyCode::Char('n') if search_state.total_matches > 0 => {
+                search_state.next_match();
+                self.navigate_to_current_match(project, ui, search_state, scheduler);
+            }
+            KeyCode::Char('N') if search_state.total_matches > 0 => {
+                search_state.prev_match();
+                self.navigate_to_current_match(project, ui, search_state, scheduler);
             }
             KeyCode::Char('a') => {
                 if ui.current_pane == Pane::Targets && project.get_selected_target().is_some() {
@@ -114,6 +330,8 @@ impl EventHandler {
                             project.selected_directory = previous_current;
                             // Update targets for the newly selected directory
                             project.update_targets_for_selected_directory(scheduler);
+                            // Refresh search matches for new directory
+                            self.refresh_search_if_active(project, ui, search_state);
                         }
                         // Always keep focus on current directory pane (never focus on parent pane)
                         ui.current_pane = Pane::CurrentDirectory;
@@ -136,6 +354,8 @@ impl EventHandler {
                                 project.selected_directory.clone(),
                                 scheduler,
                             );
+                            // Refresh search matches for new directory
+                            self.refresh_search_if_active(project, ui, search_state);
                         }
                         // Always keep focus on current directory pane
                         ui.current_pane = Pane::CurrentDirectory;
@@ -164,6 +384,10 @@ impl EventHandler {
                             project.selected_directory = next_dir.clone();
                             // Update targets for the newly selected directory
                             project.update_targets_for_selected_directory(scheduler);
+                            // Refresh search matches for new directory's targets
+                            if matches!(search_state.searching_in_pane, crate::app::SearchPane::Targets) {
+                                self.refresh_search_if_active(project, ui, search_state);
+                            }
                         }
                     }
                     Pane::SelectedDirectory => {
@@ -188,6 +412,10 @@ impl EventHandler {
                             project.selected_directory = prev_dir.clone();
                             // Update targets for the newly selected directory
                             project.update_targets_for_selected_directory(scheduler);
+                            // Refresh search matches for new directory's targets
+                            if matches!(search_state.searching_in_pane, crate::app::SearchPane::Targets) {
+                                self.refresh_search_if_active(project, ui, search_state);
+                            }
                         }
                     }
                     Pane::SelectedDirectory => {
@@ -210,6 +438,8 @@ impl EventHandler {
                                 project.selected_directory.clone(),
                                 scheduler,
                             );
+                            // Refresh search matches for new directory
+                            self.refresh_search_if_active(project, ui, search_state);
                         } else {
                             // If current directory is selected, switch to inspector
                             ui.current_group = PaneGroup::Inspector;

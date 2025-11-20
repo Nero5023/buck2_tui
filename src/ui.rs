@@ -17,11 +17,11 @@ use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 
+use crate::app::SearchState;
 use crate::buck::BuckProject;
 use crate::buck::BuckTarget;
 
 pub struct UI {
-    pub search_mode: bool,
     pub current_pane: Pane,
     pub current_group: PaneGroup,
     parent_list_state: ListState,
@@ -48,7 +48,6 @@ pub enum PaneGroup {
 impl UI {
     pub fn new() -> Self {
         Self {
-            search_mode: false,
             current_pane: Pane::CurrentDirectory,
             current_group: PaneGroup::Explorer,
             parent_list_state: ListState::default(),
@@ -58,7 +57,7 @@ impl UI {
         }
     }
 
-    pub fn draw(&mut self, f: &mut Frame, project: &BuckProject) {
+    pub fn draw(&mut self, f: &mut Frame, project: &BuckProject, search_state: &SearchState) {
         // Split main area into top path bar and main content
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -92,13 +91,14 @@ impl UI {
             .split(content_chunks[2]);
 
         self.draw_parent_directory(f, content_chunks[0], project);
-        self.draw_current_directory(f, content_chunks[1], project);
-        self.draw_targets(f, targets_chunks[0], project);
+        self.draw_current_directory(f, content_chunks[1], project, search_state);
+        self.draw_targets(f, targets_chunks[0], project, search_state);
         self.draw_selected_directory(f, targets_chunks[1], project);
         self.draw_details(f, content_chunks[3], project);
 
-        if self.search_mode {
-            self.draw_search_popup(f, project);
+        // Draw search popup if active
+        if search_state.active {
+            self.draw_search_popup(f, search_state);
         }
     }
 
@@ -162,8 +162,13 @@ impl UI {
         f.render_stateful_widget(directories_list, area, &mut self.parent_list_state);
     }
 
-    fn draw_current_directory(&mut self, f: &mut Frame, area: Rect, project: &BuckProject) {
+    fn draw_current_directory(&mut self, f: &mut Frame, area: Rect, project: &BuckProject, search_state: &SearchState) {
         let current_dirs = project.get_current_directories();
+
+        // Check if we should highlight matches in this pane
+        // Highlight as long as there's a search query, even if popup is closed
+        let should_highlight = !search_state.query.is_empty()
+            && matches!(search_state.searching_in_pane, crate::app::SearchPane::CurrentDirectory);
 
         let directories: Vec<ListItem> = current_dirs
             .sub_directories
@@ -201,14 +206,30 @@ impl UI {
                     "—".to_string() // Not loaded and no Buck files
                 };
                 let buck_indicator = if dir.has_buck_file { "📦" } else { "📁" };
-                let text = format!("{} {} ({})", buck_indicator, display_path, target_count);
 
                 // Update list state to select the selected directory
                 if is_selected {
                     self.current_list_state.select(Some(idx));
                 }
 
-                ListItem::new(text).style(style)
+                // Determine if this is the current match
+                let is_current_match = should_highlight
+                    && search_state.matches.get(search_state.current_match_idx) == Some(&idx);
+
+                // Create the item with highlighting if needed
+                let item = if should_highlight && display_path.to_lowercase().contains(&search_state.query.to_lowercase()) {
+                    // Use highlight_matches for the directory name
+                    let mut spans = vec![Span::raw(format!("{} ", buck_indicator))];
+                    spans.extend(Self::highlight_matches(&display_path, &search_state.query, is_current_match));
+                    spans.push(Span::raw(format!(" ({})", target_count)));
+                    ListItem::new(Line::from(spans)).style(style)
+                } else {
+                    // No highlighting, use plain text
+                    let text = format!("{} {} ({})", buck_indicator, display_path, target_count);
+                    ListItem::new(text).style(style)
+                };
+
+                item
             })
             .collect();
 
@@ -298,7 +319,12 @@ impl UI {
         f.render_widget(directories_list, area);
     }
 
-    fn draw_targets(&mut self, f: &mut Frame, area: Rect, project: &BuckProject) {
+    fn draw_targets(&mut self, f: &mut Frame, area: Rect, project: &BuckProject, search_state: &SearchState) {
+        // Check if we should highlight matches in this pane
+        // Highlight as long as there's a search query, even if popup is closed
+        let should_highlight = !search_state.query.is_empty()
+            && matches!(search_state.searching_in_pane, crate::app::SearchPane::Targets);
+
         let targets: Vec<ListItem> = if let Some(selected_dir) = project.get_selected_directory() {
             if selected_dir.targets_loading {
                 vec![ListItem::new("Loading targets...").style(Style::default().fg(Color::Yellow))]
@@ -315,18 +341,37 @@ impl UI {
                         };
 
                         let (icon, color) = target.get_language_icon();
-                        let icon = Span::styled(
+                        let icon_span = Span::styled(
                             icon,
                             Style::default().fg(Color::from_u32(
                                 u32::from_str_radix(&color[1..], 16).unwrap_or(0x888888),
                             )),
                         );
-                        let text = Line::from(vec![
-                            Span::raw(" "),
-                            icon,
-                            Span::raw(" "),
-                            Span::raw(target.display_title()),
-                        ]);
+
+                        let target_name = target.display_title();
+
+                        // Determine if this is the current match
+                        let is_current_match = should_highlight
+                            && search_state.matches.get(search_state.current_match_idx) == Some(&i);
+
+                        // Create the line with highlighting if needed
+                        let text = if should_highlight && target_name.to_lowercase().contains(&search_state.query.to_lowercase()) {
+                            let mut spans = vec![
+                                Span::raw(" "),
+                                icon_span,
+                                Span::raw(" "),
+                            ];
+                            spans.extend(Self::highlight_matches(&target_name, &search_state.query, is_current_match));
+                            Line::from(spans)
+                        } else {
+                            Line::from(vec![
+                                Span::raw(" "),
+                                icon_span,
+                                Span::raw(" "),
+                                Span::raw(target_name),
+                            ])
+                        };
+
                         ListItem::new(text).style(style)
                     })
                     .collect()
@@ -350,14 +395,7 @@ impl UI {
             .unwrap_or("No package selected".to_string());
 
         // TODO: use package path like fbcode//buck2/app:
-        let title = if project.search_query.is_empty() {
-            format!("Targets ({})", package_name)
-        } else {
-            format!(
-                "Targets ({}) - Search: {}",
-                package_name, project.search_query
-            )
-        };
+        let title = format!("Targets ({})", package_name);
 
         let targets_list = List::new(targets)
             .block(
@@ -560,25 +598,127 @@ impl UI {
         lines
     }
 
-    fn draw_search_popup(&self, f: &mut Frame, project: &BuckProject) {
-        let popup_area = self.centered_rect(60, 20, f.area());
+    fn draw_search_popup(&self, f: &mut Frame, search_state: &SearchState) {
+        // Create a compact search popup (smaller than before - just one line height)
+        // Use centered position but with minimal vertical space
+        let popup_width = 40;  // Fixed width in columns
+        let popup_height = 3;   // 3 lines: top border, content, bottom border
+
+        // Calculate horizontal centering
+        let area = f.area();
+        let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+        let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+
+        let popup_area = Rect {
+            x: popup_x,
+            y: popup_y,
+            width: popup_width,
+            height: popup_height,
+        };
+
+        // Clear the area
         f.render_widget(Clear, popup_area);
 
-        let search_text = vec![Line::from(vec![
-            Span::raw("Search: "),
-            Span::styled(&project.search_query, Style::default().fg(Color::Yellow)),
-        ])];
+        // Build the search text with counter
+        let counter_text = if search_state.total_matches > 0 {
+            format!(" {}/{}", search_state.current_match_idx + 1, search_state.total_matches)
+        } else {
+            String::new()
+        };
+
+        // Calculate available width for query (leaving space for "Find next: " and counter)
+        let prefix = "Find next: ";
+        let available_width = popup_width.saturating_sub(4) as usize; // 4 for borders and padding
+        let counter_len = counter_text.len();
+        let prefix_len = prefix.len();
+        let query_max_len = available_width.saturating_sub(prefix_len).saturating_sub(counter_len);
+
+        // Truncate query if too long
+        let display_query = if search_state.query.len() > query_max_len {
+            format!("{}...", &search_state.query[..query_max_len.saturating_sub(3)])
+        } else {
+            search_state.query.clone()
+        };
+
+        // Build the content line
+        let mut spans = vec![
+            Span::raw(prefix),
+            Span::styled(&display_query, Style::default().fg(Color::Yellow)),
+        ];
+
+        // Add counter on the right if there are matches
+        if !counter_text.is_empty() {
+            // Calculate padding to right-align the counter
+            let content_len = prefix_len + display_query.len();
+            let padding_len = available_width.saturating_sub(content_len).saturating_sub(counter_len);
+            if padding_len > 0 {
+                spans.push(Span::raw(" ".repeat(padding_len)));
+            }
+            spans.push(Span::styled(&counter_text, Style::default().fg(Color::Cyan)));
+        }
+
+        let search_text = vec![Line::from(spans)];
 
         let search_popup = Paragraph::new(search_text)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Fuzzy Search")
                     .border_style(Style::default().fg(Color::Yellow)),
-            )
-            .wrap(Wrap { trim: true });
+            );
 
         f.render_widget(search_popup, popup_area);
+    }
+
+    /// Helper function to highlight matching text in search results
+    /// Returns a vector of Spans with matches underlined and optionally highlighted
+    /// Note: Returns owned Spans to avoid lifetime issues
+    fn highlight_matches(text: &str, query: &str, is_current_match: bool) -> Vec<Span<'static>> {
+        if query.is_empty() {
+            return vec![Span::raw(text.to_string())];
+        }
+
+        let mut spans = Vec::new();
+        let text_lower = text.to_lowercase();
+        let query_lower = query.to_lowercase();
+        let mut last_end = 0;
+
+        // Find all occurrences of the query in the text
+        for (idx, _) in text_lower.match_indices(&query_lower) {
+            // Add text before the match
+            if idx > last_end {
+                spans.push(Span::raw(text[last_end..idx].to_string()));
+            }
+
+            // Add the matched text with underline and optional background
+            let match_text = text[idx..idx + query.len()].to_string();
+            let match_style = if is_current_match {
+                // Current match: yellow background + underline + black text
+                Style::default()
+                    .add_modifier(Modifier::UNDERLINED)
+                    .bg(Color::Yellow)
+                    .fg(Color::Black)
+            } else {
+                // Other matches: yellow text + underline
+                Style::default()
+                    .add_modifier(Modifier::UNDERLINED)
+                    .fg(Color::Yellow)
+            };
+            spans.push(Span::styled(match_text, match_style));
+
+            last_end = idx + query.len();
+        }
+
+        // Add remaining text after the last match
+        if last_end < text.len() {
+            spans.push(Span::raw(text[last_end..].to_string()));
+        }
+
+        // If no matches were found, just return the original text
+        if spans.is_empty() {
+            vec![Span::raw(text.to_string())]
+        } else {
+            spans
+        }
     }
 
     fn centered_rect(&self, percent_x: u16, percent_y: u16, r: Rect) -> Rect {
