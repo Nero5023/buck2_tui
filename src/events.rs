@@ -85,6 +85,12 @@ impl EventHandler {
                     *selected_action = 0;
                 }
             }
+            KeyCode::Char('o') => {
+                // maybe we can not limited to only when we are at the Target pane
+                if ui.current_pane == Pane::Targets {
+                    project.open_target_definition(scheduler);
+                }
+            }
             KeyCode::Tab => {
                 // Switch between Explorer and Inspector groups
                 ui.current_group = match ui.current_group {

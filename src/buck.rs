@@ -702,4 +702,95 @@ impl BuckProject {
         };
         self.directories.insert(path.clone(), new_dir);
     }
+
+    pub fn open_target_definition(&self, scheduler: &Scheduler) {
+        let Some(target) = self.get_selected_target() else {
+            debug!("No target selected");
+            return;
+        };
+
+        let target_name = target.full_target_label_name.clone();
+        debug!("Opening definition for target: {}", target_name);
+
+        // Create task to run buck2 uquery --stack
+        let task_on_success = Box::new(move |output: String| {
+            async move {
+                debug!("uquery output:\n{}", output);
+
+                // Parse the output to extract file path and line number
+                if let Some((file_path, line_number)) = Self::parse_uquery_stack_output(&output) {
+                    debug!("Extracted: path={}, line={}", file_path, line_number);
+
+                    // Open the fb-vscode URI
+                    let uri = format!(
+                        "fb-vscode://nuclide.core/open-arc?project=fbsource&path={}&line={}",
+                        file_path, line_number
+                    );
+                    debug!("Opening URI: {}", uri);
+
+                    // Use xdg-open on Linux, open on macOS, start on Windows
+                    let open_cmd = if cfg!(target_os = "linux") {
+                        "xdg-open"
+                    } else if cfg!(target_os = "macos") {
+                        "open"
+                    } else {
+                        "start"
+                    };
+
+                    if let Err(e) = std::process::Command::new(open_cmd)
+                        .arg(&uri)
+                        .spawn()
+                    {
+                        debug!("Failed to open URI: {}", e);
+                    }
+                } else {
+                    debug!("Failed to parse uquery output");
+                }
+            }
+            .boxed()
+        });
+
+        let task = Task::new(
+            Priority::Normal,
+            vec![
+                "buck2".to_owned(),
+                "uquery".to_owned(),
+                "--stack".to_owned(),
+                target_name,
+            ],
+            self.selected_directory.clone(),
+            task_on_success,
+        );
+
+        scheduler.dispatch_micro(task);
+    }
+
+    fn parse_uquery_stack_output(output: &str) -> Option<(String, u32)> {
+        // Look for lines like: "    * fbcode/buck2/BUCK:7, in <module>"
+        // We want to extract "fbcode/buck2/BUCK:7"
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('*') {
+                // Remove the "* " prefix
+                let content = trimmed.strip_prefix('*')?.trim();
+
+                // Split by comma to get the file:line part
+                if let Some(file_part) = content.split(',').next() {
+                    let file_part = file_part.trim();
+
+                    // Split by ':' to separate file path and line number
+                    if let Some(colon_pos) = file_part.rfind(':') {
+                        let file_path = &file_part[..colon_pos];
+                        let line_str = &file_part[colon_pos + 1..];
+
+                        // Parse line number
+                        if let Ok(line_number) = line_str.parse::<u32>() {
+                            return Some((file_path.to_string(), line_number));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
 }
