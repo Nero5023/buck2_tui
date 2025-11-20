@@ -165,8 +165,7 @@ impl UI {
     fn draw_current_directory(&mut self, f: &mut Frame, area: Rect, project: &BuckProject, search_state: &SearchState) {
         let current_dirs = project.get_current_directories();
 
-        // Check if we should highlight matches in this pane
-        // Highlight as long as there's a search query, even if popup is closed
+        // Highlight matches even if popup is closed
         let should_highlight = !search_state.query.is_empty()
             && matches!(search_state.searching_in_pane, crate::app::SearchPane::CurrentDirectory);
 
@@ -320,8 +319,7 @@ impl UI {
     }
 
     fn draw_targets(&mut self, f: &mut Frame, area: Rect, project: &BuckProject, search_state: &SearchState) {
-        // Check if we should highlight matches in this pane
-        // Highlight as long as there's a search query, even if popup is closed
+        // Highlight matches even if popup is closed
         let should_highlight = !search_state.query.is_empty()
             && matches!(search_state.searching_in_pane, crate::app::SearchPane::Targets);
 

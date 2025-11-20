@@ -57,12 +57,7 @@ impl SearchState {
 
     pub fn activate(&mut self, pane: Pane, current_selection: usize) {
         self.active = true;
-        // Don't clear query - keep previous search string
-        // self.query.clear();
-        self.current_match_idx = current_selection;  // Start from current position
-        // Don't clear total_matches and matches yet - will be recalculated if query exists
-        // self.total_matches = 0;
-        // self.matches.clear();
+        self.current_match_idx = current_selection;
 
         // Determine which pane we're searching in
         self.searching_in_pane = match pane {
